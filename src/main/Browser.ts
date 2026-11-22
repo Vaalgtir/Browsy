@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { BrowserWindow, Menu, clipboard, dialog, net, type WebContents } from 'electron'
-import type { BrowserAction, OverlayAction, OverlayState, Suggestion, UiEvent, UiState } from '../shared/ipc'
+import type { BrowserAction, ExtensionInfo, OverlayAction, OverlayState, SiteInfo, Suggestion, Toast, UiEvent, UiState } from '../shared/ipc'
+import { CARD_INSET, type Rect } from '../shared/layout'
 import {
   SPACE_PALETTE,
   activeSpace,
@@ -8,8 +9,10 @@ import {
   archiveTab,
   createFolder,
   createSpace,
+  createSplit,
   deleteFolder,
   deleteSpace,
+  dissolveSplit,
   findFolder,
   getSpace,
   locateTab,
@@ -17,7 +20,9 @@ import {
   newId,
   profileOfTab,
   removeTab,
+  splitMembers,
   tabIdsIn,
+  tabTitle,
   tabsToArchive,
   visibleTabOrder,
   type Id,
@@ -25,16 +30,22 @@ import {
   type TabLocation,
   type TabRecord,
 } from '../shared/model'
+import { SEARCH_ENGINES, hostOf, isDevModeUrl, resolveInput } from '../shared/search'
 import { hasArcData, importArc, readArcData } from './arcImport'
 import { Downloads } from './downloads'
+import { Bubble, FloatingSidebar, FLOATING_MARGIN, loadUi } from './floating'
 import { History } from './history'
 import { Overlay } from './Overlay'
+import { permissionsFor, setPermission } from './permissions'
 import { Profiles, partitionOf, type ProfileContext } from './profiles'
 import { StateStore } from './store'
-import { TabViews, resolveInput } from './TabViews'
+import { TabViews } from './TabViews'
 
 const ARCHIVE_CHECK_MS = 5 * 60 * 1000
 const MAX_CLOSED = 30
+const TOAST_MS = 1800
+const TOAST_SIZE = { width: 300, height: 76 }
+const STATUS_SIZE = { width: 520, height: 34 }
 const COLOR_NAMES = ['Bleuet', 'Lilas', 'Rose', 'Pêche', 'Citron', 'Pistache', 'Menthe', 'Ciel', 'Gris', 'Ardoise']
 
 interface ClosedTab {
@@ -49,14 +60,22 @@ export class Browser {
   private readonly state: PersistedState
   private readonly views: TabViews
   private readonly overlay: Overlay
+  private readonly floating: FloatingSidebar
+  private readonly toastBubble: Bubble
+  private readonly statusBubble: Bubble
   private readonly profiles: Profiles
   private readonly loadedProfiles = new Map<Id, ProfileContext>()
   private readonly history = new History()
   private readonly downloads: Downloads
   private readonly closed: ClosedTab[] = []
   private sidebarVisible = true
-  private sidebarWidth = 0
+  private devBar = false
   private broadcastPending = false
+  private toastTimer: NodeJS.Timeout | null = null
+  /** Vue de sidebar (fixe ou flottante) qui a ouvert le menu des extensions. */
+  private extensionsMenuSender: WebContents | null = null
+  private toastId = 0
+  private onOpenSettings: () => void = () => {}
 
   constructor() {
     this.state = this.store.load()
@@ -66,8 +85,8 @@ export class Browser {
       minWidth: 700,
       minHeight: 450,
       titleBarStyle: 'hidden',
-      trafficLightPosition: { x: 18, y: 18 },
-      vibrancy: 'sidebar',
+      trafficLightPosition: { x: 16, y: 17 },
+      vibrancy: 'under-window',
       visualEffectState: 'active',
       backgroundColor: '#00000000',
       show: false,
@@ -89,8 +108,28 @@ export class Browser {
         }
       },
       onClosedByPage: (id) => this.closeTab(id),
+      onHoverLink: (_id, url) => this.showStatus(url),
+      onFocusTab: (id) => this.focusPane(id),
+      searchUrl: (q) => SEARCH_ENGINES[this.state.settings.searchEngine].url(q),
     })
-    this.overlay = new Overlay(this.win, () => this.views.contentBounds(), (overlay) => this.sendOverlay(overlay))
+    this.overlay = new Overlay(this.win, () => this.views.currentLayout().card, (overlay) => this.sendOverlay(overlay))
+    this.floating = new FloatingSidebar(
+      this.win,
+      () => ({ width: this.state.settings.sidebarWidth, position: this.state.settings.sidebarPosition }),
+      () => this.updateChrome(),
+    )
+    this.toastBubble = new Bubble(this.win, 'toast', () => {
+      const { card } = this.views.currentLayout()
+      return {
+        x: card.x + Math.round((card.width - TOAST_SIZE.width) / 2),
+        y: card.y + card.height - TOAST_SIZE.height - 8,
+        ...TOAST_SIZE,
+      }
+    })
+    this.statusBubble = new Bubble(this.win, 'status', () => {
+      const { page } = this.views.currentLayout()
+      return { x: page.x, y: page.y + page.height - STATUS_SIZE.height, width: Math.min(STATUS_SIZE.width, page.width), height: STATUS_SIZE.height }
+    })
     this.downloads = new Downloads(() => this.broadcast())
     this.profiles = new Profiles((profileId) => ({
       createTab: async (details) => {
@@ -106,9 +145,11 @@ export class Browser {
       },
     }))
 
+    this.win.on('enter-full-screen', () => this.updateChrome())
+    this.win.on('leave-full-screen', () => this.updateChrome())
     this.win.once('ready-to-show', () => this.win.show())
-    if (process.env.ELECTRON_RENDERER_URL) this.win.loadURL(process.env.ELECTRON_RENDERER_URL)
-    else this.win.loadFile(join(__dirname, '../renderer/index.html'))
+    loadUi(this.win.webContents, 'sidebar')
+    this.updateChrome()
 
     setInterval(() => this.archiveStale(), ARCHIVE_CHECK_MS)
   }
@@ -117,15 +158,23 @@ export class Browser {
   async start(): Promise<void> {
     await this.profile(activeSpace(this.state).profileId)
     this.archiveStale()
-    if (!this.state.settings.arcImport && hasArcData()) setTimeout(() => void this.importFromArc(true), 800)
     const space = activeSpace(this.state)
     if (space.activeTabId) await this.selectTab(space.activeTabId)
     this.broadcast()
+    if (!this.state.settings.arcImport && hasArcData()) setTimeout(() => void this.importFromArc(true), 800)
   }
 
   flush(): void {
     this.store.saveNow(this.state)
     this.history.close()
+  }
+
+  setSettingsOpener(open: () => void): void {
+    this.onOpenSettings = open
+  }
+
+  get settings() {
+    return this.state.settings
   }
 
   // ── État envoyé à l'UI ──────────────────────────────────────────────────
@@ -139,6 +188,11 @@ export class Browser {
     return this.overlay.view.webContents
   }
 
+  /** Dev : vues de l'interface (captures automatisées). */
+  devViews() {
+    return { floating: this.floating, toast: this.toastBubble.view.webContents, overlay: this.overlay.view.webContents }
+  }
+
   viewOf(id: Id) {
     return this.views.get(id)
   }
@@ -148,12 +202,22 @@ export class Browser {
     return id ? this.views.get(id)?.webContents : undefined
   }
 
+  private devModeActive(): boolean {
+    const id = this.activeTabId
+    const url = id ? this.state.tabs[id]?.url : undefined
+    return !!url && this.views.shown.length <= 1 && isDevModeUrl(url, this.state.settings.devModeHosts)
+  }
+
   uiState(): UiState {
     return {
       persisted: this.state,
       live: this.views.live(),
       activeTabId: this.activeTabId,
+      shownTabIds: this.views.shown,
       sidebarVisible: this.sidebarVisible,
+      fullscreen: this.win.isFullScreen(),
+      layout: this.views.currentLayout(),
+      devMode: this.devModeActive(),
       downloads: this.downloads.list(),
       partition: partitionOf(activeSpace(this.state).profileId),
     }
@@ -163,6 +227,10 @@ export class Browser {
     return this.overlay.current
   }
 
+  private uiContents(): WebContents[] {
+    return [this.win.webContents, this.floating.view.webContents, this.overlay.view.webContents].filter((wc) => !wc.isDestroyed())
+  }
+
   /** Regroupe les mises à jour d'une même frame, sauvegarde et notifie l'UI. */
   private broadcast(): void {
     if (this.broadcastPending) return
@@ -170,21 +238,61 @@ export class Browser {
     setImmediate(() => {
       this.broadcastPending = false
       this.store.scheduleSave(this.state)
-      const state = this.uiState()
-      for (const wc of [this.win.webContents, this.overlay.view.webContents]) {
-        if (!wc.isDestroyed()) wc.send('ui:state', state)
+      // La barre du Developer Mode dépend de l'onglet affiché.
+      const devBar = this.devModeActive()
+      if (devBar !== this.devBar) {
+        this.devBar = devBar
+        this.views.setLayout({ devBar })
       }
+      const state = this.uiState()
+      for (const wc of this.uiContents()) wc.send('ui:state', state)
     })
   }
 
   private sendOverlay(overlay: OverlayState): void {
-    for (const wc of [this.win.webContents, this.overlay.view.webContents]) {
-      if (!wc.isDestroyed()) wc.send('ui:overlay', overlay)
-    }
+    for (const wc of this.uiContents()) wc.send('ui:overlay', overlay)
   }
 
   private sendEvent(event: UiEvent): void {
-    this.win.webContents.send('ui:event', event)
+    for (const wc of [this.win.webContents, this.floating.view.webContents]) if (!wc.isDestroyed()) wc.send('ui:event', event)
+  }
+
+  /** Mise en page de la fenêtre : sidebar, plein écran, feux tricolores, sidebar flottante. */
+  private updateChrome(): void {
+    const { sidebarWidth, sidebarPosition } = this.state.settings
+    const fullscreen = this.win.isFullScreen()
+    this.devBar = this.devModeActive()
+    this.views.setLayout({ sidebarVisible: this.sidebarVisible, sidebarWidth, position: sidebarPosition, fullscreen, devBar: this.devBar })
+    this.floating.setEnabled(!this.sidebarVisible)
+    // Feux tricolores : avec la sidebar (docked ou flottante), comme dans Arc.
+    this.win.setWindowButtonVisibility(this.sidebarVisible || this.floating.isShown)
+    this.win.setWindowButtonPosition(
+      this.floating.isShown && sidebarPosition === 'left' ? { x: 16 + FLOATING_MARGIN, y: 17 + CARD_INSET } : { x: 16, y: 17 },
+    )
+    this.overlay.layout()
+    this.broadcast()
+  }
+
+  // ── Notifications ───────────────────────────────────────────────────────
+
+  showToast(message: string, detail?: string): void {
+    const toast: Toast = { id: ++this.toastId, message, detail }
+    this.toastBubble.show()
+    const send = () => this.toastBubble.view.webContents.send('ui:toast', toast)
+    if (this.toastBubble.view.webContents.isLoading()) this.toastBubble.view.webContents.once('did-finish-load', send)
+    else send()
+    if (this.toastTimer) clearTimeout(this.toastTimer)
+    this.toastTimer = setTimeout(() => {
+      this.toastBubble.view.webContents.send('ui:toast', null)
+      // Laisse l'animation de sortie se jouer avant de retirer la vue.
+      this.toastTimer = setTimeout(() => this.toastBubble.hide(), 200)
+    }, TOAST_MS)
+  }
+
+  private showStatus(url: string): void {
+    this.statusBubble.view.webContents.send('ui:status', url)
+    if (url) this.statusBubble.show()
+    else this.statusBubble.hide()
   }
 
   // ── Profils ─────────────────────────────────────────────────────────────
@@ -205,19 +313,17 @@ export class Browser {
 
   // ── Onglets ─────────────────────────────────────────────────────────────
 
+  private resolve(input: string): string {
+    return resolveInput(input, this.state.settings.searchEngine)
+  }
+
   async newTab(url?: string, options: { background?: boolean; profileId?: Id } = {}): Promise<Id> {
     let space = activeSpace(this.state)
     if (options.profileId && options.profileId !== space.profileId) {
       space = this.state.spaces.find((s) => s.profileId === options.profileId) ?? space
     }
     const now = Date.now()
-    const record: TabRecord = {
-      id: newId(),
-      url: url ? resolveInput(url) : 'https://www.google.com/',
-      title: '',
-      createdAt: now,
-      lastActiveAt: now,
-    }
+    const record: TabRecord = { id: newId(), url: this.resolve(url ?? ''), title: '', createdAt: now, lastActiveAt: now }
     addTab(this.state, record, space.id)
     this.views.ensure(record.id, record.url, await this.profile(space.profileId))
     if (!options.background) await this.selectTab(record.id)
@@ -234,9 +340,25 @@ export class Browser {
     const space = activeSpace(this.state)
     space.activeTabId = id
     tab.lastActiveAt = Date.now()
-    this.views.ensure(id, tab.url, await this.profile(location.profileId))
+    const profile = await this.profile(location.profileId)
+    // Split View : on affiche tous les onglets du groupe, avec le focus sur celui choisi.
+    const { split, tabs } = splitMembers(this.state, id)
+    for (const memberId of tabs) {
+      const member = this.state.tabs[memberId]
+      if (member) this.views.ensure(memberId, member.url, profile)
+    }
     if (this.overlay.current.kind === 'find') this.closeOverlay()
-    this.views.show(id)
+    this.views.show(tabs, split?.sizes, id)
+    this.updateChrome()
+  }
+
+  /** Clic dans un autre panneau d'un Split View : il devient l'onglet actif. */
+  private focusPane(id: Id): void {
+    if (!this.views.shown.includes(id) || this.activeTabId === id) return
+    const space = activeSpace(this.state)
+    space.activeTabId = id
+    const tab = this.state.tabs[id]
+    if (tab) tab.lastActiveAt = Date.now()
     this.broadcast()
   }
 
@@ -250,8 +372,9 @@ export class Browser {
     if (!location || !tab) return
     const space = activeSpace(this.state)
     const wasActive = space.activeTabId === id
+    const others = this.views.shown.filter((x) => x !== id)
     let next: Id | undefined
-    if (wasActive) {
+    if (wasActive && !others.length) {
       const order = tabIdsIn(space.today)
       const i = order.indexOf(id)
       next = i >= 0 ? (order[i + 1] ?? order[i - 1]) : order[0]
@@ -269,10 +392,11 @@ export class Browser {
     }
     if (wasActive) {
       space.activeTabId = undefined
-      if (next) void this.selectTab(next)
-      else this.views.show(null)
+      if (others.length) void this.selectTab(others[0])
+      else if (next) void this.selectTab(next)
+      else this.views.show([])
     }
-    this.broadcast()
+    this.updateChrome()
   }
 
   async reopenClosedTab(): Promise<void> {
@@ -293,7 +417,8 @@ export class Browser {
       this.history.updateTitle(tab.url, patch.title)
     }
     if (patch.favicon) tab.favicon = patch.favicon
-    this.broadcast()
+    if (patch.url && id === this.activeTabId) this.updateChrome()
+    else this.broadcast()
   }
 
   private archiveStale(): void {
@@ -327,9 +452,24 @@ export class Browser {
     this.broadcast()
   }
 
-  copyActiveUrl(): void {
-    const url = this.activeWebContents()?.getURL()
-    if (url) clipboard.writeText(url)
+  copyUrl(id: Id | null = this.activeTabId, markdown = false): void {
+    const tab = id ? this.state.tabs[id] : undefined
+    const url = (id && this.views.get(id)?.webContents.getURL()) || tab?.url
+    if (!url || !tab) return
+    clipboard.writeText(markdown ? `[${tabTitle(tab).replace(/[[\]]/g, '')}](${url})` : url)
+    this.showToast(markdown ? 'Lien Markdown copié' : 'Lien copié', url)
+  }
+
+  /** Split View de l'onglet actif avec l'onglet suivant de la liste (⌃⇧=). */
+  splitActiveWithNext(): void {
+    const id = this.activeTabId
+    if (!id) return
+    const order = visibleTabOrder(this.state, this.state.activeSpaceId).filter((x) => x !== id && locateTab(this.state, x)?.section !== 'favorites')
+    const members = splitMembers(this.state, id).tabs
+    const candidate = order.find((x) => !members.includes(x))
+    if (!candidate) return
+    createSplit(this.state, [...members, candidate])
+    void this.selectTab(id)
   }
 
   // ── Import Arc ──────────────────────────────────────────────────────────
@@ -344,8 +484,8 @@ export class Browser {
       type: 'question',
       message: 'Importer tes Spaces depuis Arc ?',
       detail:
-        'Spaces (thèmes et icônes), onglets épinglés, dossiers, Split Views, favoris, sites en Developer Mode et règles d\'Air Traffic Control. ' +
-        'Les données d\'Arc ne sont pas modifiées. Les connexions aux sites (cookies) ne sont pas reprises.',
+        "Spaces (thèmes et icônes), onglets épinglés, dossiers, Split Views, favoris, sites en Developer Mode et règles d'Air Traffic Control. " +
+        "Les données d'Arc ne sont pas modifiées. Les connexions aux sites (cookies) ne sont pas reprises.",
       buttons: firstLaunch ? ['Importer', 'Plus tard', 'Ne plus demander'] : ['Importer', 'Annuler'],
       defaultId: 0,
       cancelId: 1,
@@ -358,7 +498,6 @@ export class Browser {
     try {
       const summary = importArc(this.state, readArcData())
       await this.selectSpace(this.state.activeSpaceId)
-      this.broadcast()
       await dialog.showMessageBox(this.win, {
         type: 'info',
         message: 'Import terminé',
@@ -377,8 +516,8 @@ export class Browser {
     this.state.activeSpaceId = id
     await this.profile(space.profileId)
     if (space.activeTabId) await this.selectTab(space.activeTabId)
-    else this.views.show(null)
-    this.broadcast()
+    else this.views.show([])
+    this.updateChrome()
   }
 
   selectRelativeSpace(delta: number): void {
@@ -396,14 +535,13 @@ export class Browser {
 
   toggleSidebar(): void {
     this.sidebarVisible = !this.sidebarVisible
-    this.views.setSidebarWidth(this.sidebarVisible ? this.sidebarWidth : 0)
-    this.overlay.layout()
-    this.broadcast()
+    if (this.sidebarVisible) this.floating.hide()
+    this.updateChrome()
   }
 
   openCommandBar(mode: 'new-tab' | 'edit-url'): void {
     const tabId = this.activeTabId
-    const initial = mode === 'edit-url' && tabId ? (this.state.tabs[tabId]?.url ?? '') : ''
+    const initial = mode === 'edit-url' && tabId ? (this.views.get(tabId)?.webContents.getURL() || this.state.tabs[tabId]?.url || '') : ''
     this.overlay.set({ kind: 'command-bar', mode: tabId ? mode : 'new-tab', initial, tabId })
   }
 
@@ -419,6 +557,84 @@ export class Browser {
     this.activeWebContents()?.focus()
   }
 
+  toggleDevMode(host = hostOf(this.state.tabs[this.activeTabId ?? '']?.url ?? '')): void {
+    if (!host) return
+    const hosts = this.state.settings.devModeHosts
+    const enabled = hosts.includes(host)
+    this.state.settings.devModeHosts = enabled ? hosts.filter((h) => h !== host) : [...hosts, host]
+    this.showToast(enabled ? 'Developer Mode désactivé' : 'Developer Mode activé', host)
+    this.updateChrome()
+    if (this.overlay.current.kind === 'site-controls') void this.openSiteControls()
+  }
+
+  // ── Contrôles du site ───────────────────────────────────────────────────
+
+  private async siteInfo(tabId: Id): Promise<SiteInfo | undefined> {
+    const tab = this.state.tabs[tabId]
+    if (!tab) return undefined
+    const wc = this.views.get(tabId)?.webContents
+    const url = wc?.getURL() || tab.url
+    let origin = ''
+    let secure = false
+    try {
+      const parsed = new URL(url)
+      origin = parsed.origin
+      secure = parsed.protocol === 'https:'
+    } catch {
+      /* URL interne */
+    }
+    return {
+      tabId,
+      url,
+      host: hostOf(url),
+      origin,
+      secure,
+      zoom: wc?.getZoomFactor() ?? 1,
+      devMode: isDevModeUrl(url, this.state.settings.devModeHosts),
+      permissions: origin ? permissionsFor(origin) : [],
+    }
+  }
+
+  async openSiteControls(anchor?: Rect): Promise<void> {
+    const tabId = this.activeTabId
+    const site = tabId ? await this.siteInfo(tabId) : undefined
+    if (!site) return
+    this.overlay.set({ kind: 'site-controls', site }, anchor)
+  }
+
+  // ── Extensions ──────────────────────────────────────────────────────────
+
+  /** Extensions du profil actif ayant un bouton, avec leur état épinglé. */
+  private async extensionList(): Promise<ExtensionInfo[]> {
+    const profileId = activeSpace(this.state).profileId
+    const profile = await this.profile(profileId)
+    const pinned = this.state.settings.pinnedExtensions[profileId]
+    return profile.session.extensions
+      .getAllExtensions()
+      .filter((e) => e.manifest.action || e.manifest.browser_action)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((e, i) => ({ id: e.id, name: e.name, pinned: pinned ? pinned.includes(e.id) : i < 3 }))
+  }
+
+  /** Petit menu des extensions (bouton puzzle de la barre d'URL). */
+  async openExtensionsMenu(anchor?: Rect): Promise<void> {
+    const extensions = await this.extensionList()
+    this.overlay.set({ kind: 'extensions', extensions, partition: partitionOf(activeSpace(this.state).profileId) }, anchor)
+  }
+
+  /** Position d'un élément de la sidebar flottante, ramenée aux coordonnées de la fenêtre. */
+  translateAnchor(sender: WebContents, anchor: Rect): Rect {
+    if (sender !== this.floating.view.webContents) return anchor
+    const bounds = this.floating.view.getBounds()
+    return { ...anchor, x: anchor.x + bounds.x, y: anchor.y + bounds.y }
+  }
+
+  /** Library > Historique : recherche, ou dernières pages visitées si la requête est vide. */
+  searchHistory(query: string) {
+    const entries = query.trim() ? this.history.search(query, 60) : this.history.recent(60)
+    return entries.map(({ url, title, lastVisitAt }) => ({ url, title, lastVisitAt }))
+  }
+
   // ── Command bar ─────────────────────────────────────────────────────────
 
   async suggest(query: string): Promise<Suggestion[]> {
@@ -427,14 +643,14 @@ export class Browser {
     const lower = q.toLowerCase()
     const results: Suggestion[] = []
     const looksLikeUrl = !/\s/.test(q) && (/^[a-z]+:\/\//i.test(q) || /^[^/\s]+\.[a-z]{2,}/i.test(q) || /^localhost/i.test(q))
-    if (looksLikeUrl) results.push({ kind: 'url', title: q, url: resolveInput(q) })
+    if (looksLikeUrl) results.push({ kind: 'url', title: q, url: this.resolve(q) })
 
     const openTabs = Object.values(this.state.tabs)
-      .filter((t) => t.title.toLowerCase().includes(lower) || t.url.toLowerCase().includes(lower))
+      .filter((t) => tabTitle(t).toLowerCase().includes(lower) || t.url.toLowerCase().includes(lower))
       .sort((a, b) => b.lastActiveAt - a.lastActiveAt)
       .slice(0, 4)
     for (const t of openTabs) {
-      results.push({ kind: 'tab', title: t.title || t.url, subtitle: 'Passer à cet onglet', url: t.url, tabId: t.id, favicon: t.favicon })
+      results.push({ kind: 'tab', title: tabTitle(t), subtitle: 'Passer à cet onglet', url: t.url, tabId: t.id, favicon: t.favicon })
     }
 
     const openUrls = new Set(openTabs.map((t) => t.url))
@@ -442,9 +658,10 @@ export class Browser {
       if (!openUrls.has(entry.url)) results.push({ kind: 'history', title: entry.title || entry.url, subtitle: entry.url, url: entry.url })
     }
 
-    if (!looksLikeUrl) results.unshift({ kind: 'search', title: q, subtitle: 'Rechercher sur Google', url: resolveInput(q) })
+    const engine = SEARCH_ENGINES[this.state.settings.searchEngine]
+    if (!looksLikeUrl) results.unshift({ kind: 'search', title: q, subtitle: `Rechercher sur ${engine.name}`, url: this.resolve(q) })
     for (const s of await this.searchSuggestions(q)) {
-      if (s.toLowerCase() !== lower) results.push({ kind: 'search', title: s, url: resolveInput(s) })
+      if (s.toLowerCase() !== lower) results.push({ kind: 'search', title: s, url: engine.url(s) })
     }
     return results.slice(0, 10)
   }
@@ -454,7 +671,7 @@ export class Browser {
       .filter((t) => t.id !== this.activeTabId)
       .sort((a, b) => b.lastActiveAt - a.lastActiveAt)
       .slice(0, 6)
-      .map((t) => ({ kind: 'tab', title: t.title || t.url, subtitle: 'Passer à cet onglet', url: t.url, tabId: t.id, favicon: t.favicon }))
+      .map((t) => ({ kind: 'tab', title: tabTitle(t), subtitle: 'Passer à cet onglet', url: t.url, tabId: t.id, favicon: t.favicon }))
   }
 
   private async searchSuggestions(q: string): Promise<string[]> {
@@ -471,7 +688,7 @@ export class Browser {
 
   // ── Actions de l'UI ─────────────────────────────────────────────────────
 
-  async dispatch(action: BrowserAction | OverlayAction): Promise<void> {
+  async dispatch(action: BrowserAction | OverlayAction, sender?: WebContents): Promise<void> {
     const s = this.state
     switch (action.type) {
       case 'tab.new':
@@ -484,7 +701,7 @@ export class Browser {
         this.closeTab(action.id)
         break
       case 'tab.navigate':
-        this.views.get(action.id)?.webContents.loadURL(resolveInput(action.input))
+        this.views.get(action.id)?.webContents.loadURL(this.resolve(action.input))
         break
       case 'tab.back':
         this.views.get(action.id)?.webContents.navigationHistory.goBack()
@@ -510,9 +727,32 @@ export class Browser {
         moveTab(s, action.id, action.to, action.index)
         this.broadcast()
         break
+      case 'tab.rename': {
+        const tab = s.tabs[action.id]
+        if (tab) tab.customTitle = action.title.trim() && action.title.trim() !== tab.title ? action.title.trim() : undefined
+        this.broadcast()
+        break
+      }
       case 'tab.contextMenu':
         this.tabContextMenu(action.id)
         break
+      case 'tab.copyUrl':
+        this.copyUrl(action.id ?? this.activeTabId, action.markdown)
+        break
+      case 'tab.devtools':
+        this.views.get(action.id)?.webContents.openDevTools()
+        break
+      case 'split.create': {
+        const split = createSplit(s, action.ids)
+        if (split) await this.selectTab(action.ids[0])
+        break
+      }
+      case 'split.dissolve': {
+        const active = this.activeTabId
+        dissolveSplit(s, action.id)
+        if (active) await this.selectTab(active)
+        break
+      }
       case 'folder.new': {
         const folder = createFolder(s, action.spaceId)
         this.broadcast()
@@ -549,11 +789,20 @@ export class Browser {
         if (action.name?.trim()) space.name = action.name.trim()
         if (action.icon !== undefined) space.icon = action.icon
         if (action.theme) space.theme = action.theme
+        if (action.archiveAfterHours !== undefined) space.archiveAfterHours = action.archiveAfterHours ?? undefined
         this.broadcast()
         break
       }
       case 'space.contextMenu':
         this.spaceContextMenu(action.id)
+        break
+      case 'space.newMenu':
+        Menu.buildFromTemplate([
+          { label: 'Nouvel onglet', accelerator: 'CmdOrCtrl+T', click: () => this.openCommandBar('new-tab') },
+          { label: 'Nouveau dossier', click: () => void this.dispatch({ type: 'folder.new', spaceId: s.activeSpaceId }) },
+          { type: 'separator' },
+          { label: 'Nouveau Space', click: () => void this.dispatch({ type: 'space.new' }) },
+        ]).popup({ window: this.win })
         break
       case 'today.clear': {
         const space = getSpace(s, action.spaceId)
@@ -562,8 +811,8 @@ export class Browser {
           this.views.destroy(id)
           archiveTab(s, id)
         }
-        if (space.id === s.activeSpaceId && !space.activeTabId) this.views.show(null)
-        this.broadcast()
+        if (space.id === s.activeSpaceId && !space.activeTabId) this.views.show([])
+        this.updateChrome()
         break
       }
       case 'download.open':
@@ -575,13 +824,58 @@ export class Browser {
       case 'download.clear':
         this.downloads.clearFinished()
         break
+      case 'devMode.toggle':
+        this.toggleDevMode(action.host)
+        break
+      case 'extension.pin': {
+        const profileId = activeSpace(s).profileId
+        const current = s.settings.pinnedExtensions[profileId] ?? (await this.extensionList()).filter((e) => e.pinned).map((e) => e.id)
+        s.settings.pinnedExtensions[profileId] = action.pinned ? [...new Set([...current, action.id])] : current.filter((x) => x !== action.id)
+        this.broadcast()
+        if (this.overlay.current.kind === 'extensions') void this.openExtensionsMenu()
+        break
+      }
+      case 'extension.activate': {
+        // Le popup de l'extension s'ouvre depuis la sidebar, ancré sur le bouton puzzle.
+        const target = this.extensionsMenuSender && !this.extensionsMenuSender.isDestroyed() ? this.extensionsMenuSender : this.win.webContents
+        this.closeOverlay()
+        target.send('ui:event', { type: 'activate-extension', id: action.id } satisfies UiEvent)
+        break
+      }
+      case 'ui.extensionsMenu':
+        this.extensionsMenuSender = sender ?? null
+        await this.openExtensionsMenu(sender ? this.translateAnchor(sender, action.anchor) : action.anchor)
+        break
+      case 'settings.update':
+        Object.assign(s.settings, action.patch)
+        this.updateChrome()
+        break
       case 'ui.sidebarWidth':
-        this.sidebarWidth = action.width
-        if (this.sidebarVisible) this.views.setSidebarWidth(action.width)
-        this.overlay.layout()
+        s.settings.sidebarWidth = Math.round(action.width)
+        this.updateChrome()
+        break
+      case 'ui.toggleSidebar':
+        this.toggleSidebar()
         break
       case 'ui.commandBar':
         this.openCommandBar(action.mode)
+        break
+      case 'ui.siteControls':
+        await this.openSiteControls(sender ? this.translateAnchor(sender, action.anchor) : action.anchor)
+        break
+      case 'ui.openSettings':
+        this.onOpenSettings()
+        break
+      case 'archive.restore': {
+        const [entry] = s.archive.splice(action.index, 1)
+        if (!entry) break
+        const space = getSpace(s, entry.spaceId) ?? activeSpace(s)
+        if (space.id !== s.activeSpaceId) await this.selectSpace(space.id)
+        await this.newTab(entry.url)
+        break
+      }
+      case 'history.open':
+        await this.newTab(action.url)
         break
       case 'overlay.close':
         this.closeOverlay()
@@ -594,7 +888,7 @@ export class Browser {
           await this.selectTab(suggestion.tabId)
           break
         }
-        const url = suggestion?.url ?? resolveInput(input)
+        const url = suggestion?.url ?? this.resolve(input)
         if (current.kind === 'command-bar' && current.mode === 'edit-url' && current.tabId) {
           this.views.get(current.tabId)?.webContents.loadURL(url)
         } else {
@@ -614,6 +908,31 @@ export class Browser {
         }
         break
       }
+      case 'site.zoom': {
+        const wc = this.views.get(action.tabId)?.webContents
+        if (!wc) break
+        const levels = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+        const current = wc.getZoomFactor()
+        const index = levels.findIndex((l) => l >= current - 0.001)
+        const next = action.delta === 0 ? 1 : levels[Math.min(levels.length - 1, Math.max(0, index + action.delta))]
+        wc.setZoomFactor(next)
+        if (this.overlay.current.kind === 'site-controls') void this.openSiteControls()
+        break
+      }
+      case 'site.permission':
+        setPermission(action.key, action.decision)
+        if (this.overlay.current.kind === 'site-controls') void this.openSiteControls()
+        break
+      case 'site.clearData': {
+        const site = await this.siteInfo(action.tabId)
+        const wc = this.views.get(action.tabId)?.webContents
+        if (!site?.origin || !wc) break
+        await wc.session.clearStorageData({ origin: site.origin })
+        this.closeOverlay()
+        this.showToast('Données du site effacées', site.host)
+        wc.reload()
+        break
+      }
     }
   }
 
@@ -630,6 +949,7 @@ export class Browser {
       this.broadcast()
     }
     const otherSpaces = s.spaces.filter((sp) => sp.id !== location.spaceId)
+    const active = this.activeTabId
     const template: Electron.MenuItemConstructorOptions[] = [
       location.section === 'favorites'
         ? { label: 'Retirer des favoris', click: move({ section: 'pinned', spaceId }) }
@@ -639,18 +959,24 @@ export class Browser {
         : location.section === 'today'
           ? { label: 'Épingler', click: move({ section: 'pinned', spaceId }) }
           : { label: 'Épingler dans ce Space', click: move({ section: 'pinned', spaceId: s.activeSpaceId }) },
+      ...(location.section !== 'today' ? [{ label: 'Renommer…', click: () => this.sendEvent({ type: 'rename-tab', id }) }] : []),
       ...(tab.pinnedUrl && tab.pinnedUrl !== tab.url
         ? [{ label: "Revenir à l'URL d'origine", click: () => void this.dispatch({ type: 'tab.resetToPinned', id }) }]
         : []),
       { type: 'separator' },
-      { label: 'Copier le lien', click: () => clipboard.writeText(tab.url) },
+      ...(location.splitId
+        ? [{ label: 'Quitter le Split View', click: () => void this.dispatch({ type: 'split.dissolve', id: location.splitId! }) }]
+        : active && active !== id && location.section !== 'favorites' && locateTab(s, active)?.section !== 'favorites'
+          ? [{ label: "Split View avec l'onglet actif", click: () => void this.dispatch({ type: 'split.create', ids: [active, id] }) }]
+          : []),
+      { label: 'Copier le lien', click: () => this.copyUrl(id) },
       { label: 'Dupliquer', click: () => void this.newTab(tab.url, { background: true, profileId: location.profileId }) },
       ...(otherSpaces.length && location.section !== 'favorites'
         ? [
             {
               label: 'Déplacer vers',
               submenu: otherSpaces.map((sp) => ({
-                label: `${sp.icon ? `${sp.icon} ` : ''}${sp.name}`,
+                label: sp.name,
                 click: move({ section: location.section === 'pinned' ? 'pinned' : 'today', spaceId: sp.id }),
               })),
             },
@@ -687,6 +1013,14 @@ export class Browser {
     const s = this.state
     const space = getSpace(s, spaceId)
     if (!space) return
+    const archiveOptions: [string, number | null][] = [
+      ['Réglage général', null],
+      ['12 heures', 12],
+      ['24 heures', 24],
+      ['7 jours', 24 * 7],
+      ['30 jours', 24 * 30],
+      ['Jamais', 0],
+    ]
     const template: Electron.MenuItemConstructorOptions[] = [
       { label: 'Renommer…', click: () => this.sendEvent({ type: 'rename-space', id: spaceId }) },
       {
@@ -696,6 +1030,15 @@ export class Browser {
           type: 'radio' as const,
           checked: space.theme.colors[0] === color,
           click: () => void this.dispatch({ type: 'space.update', id: spaceId, theme: { ...space.theme, colors: [color] } }),
+        })),
+      },
+      {
+        label: 'Archiver les onglets après',
+        submenu: archiveOptions.map(([label, hours]) => ({
+          label,
+          type: 'radio' as const,
+          checked: (space.archiveAfterHours ?? null) === hours,
+          click: () => void this.dispatch({ type: 'space.update', id: spaceId, archiveAfterHours: hours }),
         })),
       },
       {

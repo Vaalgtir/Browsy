@@ -69,6 +69,13 @@ export class History {
     return rows as unknown as HistoryEntry[]
   }
 
+  /** Dernières pages visitées. */
+  recent(limit = 50): HistoryEntry[] {
+    return this.db
+      .prepare('SELECT url, title, visit_count AS visitCount, last_visit_at AS lastVisitAt FROM pages ORDER BY last_visit_at DESC LIMIT ?')
+      .all(limit) as unknown as HistoryEntry[]
+  }
+
   close(): void {
     this.db.close()
   }

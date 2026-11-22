@@ -9,6 +9,12 @@ import { BrowserWindow, app, dialog, systemPreferences, type Session } from 'ele
 
 type Decision = 'allow' | 'deny'
 
+export interface StoredPermission {
+  key: string
+  label: string
+  decision: Decision
+}
+
 /** Permissions accordées sans demander (comme Chrome). */
 const ALWAYS_ALLOWED = new Set(['clipboard-sanitized-write', 'fullscreen', 'pointerLock', 'keyboardLock', 'window-management'])
 
@@ -39,9 +45,46 @@ function load(): Record<string, Decision> {
   return decisions!
 }
 
-function remember(key: string, decision: Decision): void {
-  load()[key] = decision
+function remember(key: string, decision: Decision | null): void {
+  if (decision) load()[key] = decision
+  else delete load()[key]
   writeFileSync(decisionsFile(), JSON.stringify(decisions, null, 2))
+}
+
+/** Libellé lisible d'une clé « origine|permission[:médias] ». */
+function labelOf(key: string): string {
+  const [, rest = ''] = key.split('|')
+  const [permission, media] = rest.split(':')
+  if (permission === 'media') {
+    const types = media?.split('+') ?? []
+    if (types.includes('video') && types.includes('audio')) return 'Caméra et micro'
+    if (types.includes('video')) return 'Caméra'
+    if (types.includes('audio')) return 'Micro'
+  }
+  const names: Record<string, string> = {
+    notifications: 'Notifications',
+    geolocation: 'Position',
+    'clipboard-read': 'Presse-papiers',
+    midi: 'Appareils MIDI',
+    midiSysex: 'Appareils MIDI',
+    openExternal: 'Applications externes',
+    'idle-detection': "Détection d'inactivité",
+    'storage-access': 'Cookies intersites',
+    'top-level-storage-access': 'Cookies intersites',
+  }
+  return names[permission] ?? permission
+}
+
+/** Décisions mémorisées pour une origine (menu « Contrôles du site »). */
+export function permissionsFor(origin: string): StoredPermission[] {
+  return Object.entries(load())
+    .filter(([key]) => key.startsWith(`${origin}|`))
+    .map(([key, decision]) => ({ key, label: labelOf(key), decision }))
+}
+
+/** Modifie (ou oublie, avec null) une décision mémorisée. */
+export function setPermission(key: string, decision: Decision | null): void {
+  remember(key, decision)
 }
 
 function originOf(url: string): string {

@@ -1,13 +1,20 @@
-import type { Id, LiveTab, PersistedState, SpaceTheme, TabLocation } from './model'
+import type { Layout, Rect } from './layout'
+import type { Id, LiveTab, PersistedState, Settings, SpaceTheme, TabLocation } from './model'
 
-/** État envoyé à l'UI (sidebar et overlay). */
+/** État envoyé à l'UI (sidebar, sidebar flottante, overlay). */
 export interface UiState {
   persisted: PersistedState
   live: Record<Id, LiveTab>
   activeTabId: Id | null
+  /** Onglets affichés (plusieurs en Split View). */
+  shownTabIds: Id[]
   sidebarVisible: boolean
+  fullscreen: boolean
+  layout: Layout
+  /** Developer Mode actif pour l'onglet affiché. */
+  devMode: boolean
   downloads: DownloadInfo[]
-  /** Partition de session du profil actif (pour <browser-action-list>). */
+  /** Partition de session du profil actif (pour les boutons d'extensions). */
   partition: string
 }
 
@@ -33,21 +40,37 @@ export type BrowserAction =
   | { type: 'tab.resetToPinned'; id: Id }
   | { type: 'tab.toggleMute'; id: Id }
   | { type: 'tab.move'; id: Id; to: TabLocation; index: number }
+  | { type: 'tab.rename'; id: Id; title: string }
   | { type: 'tab.contextMenu'; id: Id }
+  | { type: 'tab.copyUrl'; id?: Id; markdown?: boolean }
+  | { type: 'tab.devtools'; id: Id }
+  | { type: 'split.create'; ids: Id[] }
+  | { type: 'split.dissolve'; id: Id }
   | { type: 'folder.new'; spaceId: Id }
   | { type: 'folder.toggle'; spaceId: Id; id: Id }
   | { type: 'folder.rename'; spaceId: Id; id: Id; title: string }
   | { type: 'folder.contextMenu'; spaceId: Id; id: Id }
   | { type: 'space.select'; id: Id }
   | { type: 'space.new' }
-  | { type: 'space.update'; id: Id; name?: string; icon?: string; theme?: SpaceTheme }
+  | { type: 'space.update'; id: Id; name?: string; icon?: string; theme?: SpaceTheme; archiveAfterHours?: number | null }
   | { type: 'space.contextMenu'; id: Id }
+  | { type: 'space.newMenu' }
   | { type: 'today.clear'; spaceId: Id }
   | { type: 'download.open'; id: string }
   | { type: 'download.reveal'; id: string }
   | { type: 'download.clear' }
-  | { type: 'ui.sidebarWidth'; width: number }
+  | { type: 'devMode.toggle'; host: string }
+  | { type: 'extension.pin'; id: string; pinned: boolean }
+  | { type: 'settings.update'; patch: Partial<Settings> }
+  | { type: 'ui.sidebarWidth'; width: number; commit?: boolean }
+  | { type: 'ui.toggleSidebar' }
   | { type: 'ui.commandBar'; mode: CommandBarMode }
+  | { type: 'ui.siteControls'; anchor: Rect }
+  | { type: 'ui.extensionsMenu'; anchor: Rect }
+  | { type: 'extension.activate'; id: string }
+  | { type: 'ui.openSettings' }
+  | { type: 'archive.restore'; index: number }
+  | { type: 'history.open'; url: string }
 
 export type CommandBarMode = 'new-tab' | 'edit-url'
 
@@ -58,6 +81,34 @@ export interface Suggestion {
   url?: string
   tabId?: Id
   favicon?: string
+  /** Identifiant de commande (kind = command). */
+  command?: string
+}
+
+export type PermissionDecision = 'allow' | 'deny'
+
+export interface SitePermission {
+  key: string
+  label: string
+  decision: PermissionDecision
+}
+
+export interface ExtensionInfo {
+  id: string
+  name: string
+  pinned: boolean
+}
+
+/** Contenu du menu « Contrôles du site ». */
+export interface SiteInfo {
+  tabId: Id
+  url: string
+  host: string
+  origin: string
+  secure: boolean
+  zoom: number
+  devMode: boolean
+  permissions: SitePermission[]
 }
 
 /** Ce que l'overlay affiche. */
@@ -65,15 +116,39 @@ export type OverlayState =
   | { kind: 'hidden' }
   | { kind: 'command-bar'; mode: CommandBarMode; initial: string; tabId: Id | null }
   | { kind: 'find'; tabId: Id; matches: number; activeMatch: number }
+  | { kind: 'site-controls'; site: SiteInfo }
+  | { kind: 'extensions'; extensions: ExtensionInfo[]; partition: string }
 
 /** Actions propres à l'overlay. */
 export type OverlayAction =
   | { type: 'overlay.close' }
   | { type: 'commandBar.submit'; input: string; suggestion?: Suggestion }
   | { type: 'find.query'; text: string; forward: boolean; findNext: boolean }
+  | { type: 'site.zoom'; tabId: Id; delta: number }
+  | { type: 'site.permission'; origin: string; key: string; decision: PermissionDecision | null }
+  | { type: 'site.clearData'; tabId: Id }
 
 /** Événements ponctuels envoyés à la sidebar. */
-export type UiEvent = { type: 'rename-space'; id: Id } | { type: 'rename-folder'; spaceId: Id; id: Id }
+export type UiEvent =
+  | { type: 'rename-space'; id: Id }
+  | { type: 'rename-folder'; spaceId: Id; id: Id }
+  | { type: 'rename-tab'; id: Id }
+  | { type: 'floating-show' }
+  /** Ouvrir le popup d'une extension, ancré sur le bouton puzzle de la barre d'URL. */
+  | { type: 'activate-extension'; id: string }
+
+/** Petite notification (« Lien copié »). */
+export interface Toast {
+  id: number
+  message: string
+  detail?: string
+}
+
+export interface HistoryItem {
+  url: string
+  title: string
+  lastVisitAt: number
+}
 
 export interface UiApi {
   dispatch(action: BrowserAction | OverlayAction): Promise<void>
@@ -83,4 +158,7 @@ export interface UiApi {
   suggest(query: string): Promise<Suggestion[]>
   getOverlay(): Promise<OverlayState>
   onOverlay(listener: (overlay: OverlayState) => void): () => void
+  onToast(listener: (toast: Toast | null) => void): () => void
+  onStatus(listener: (url: string) => void): () => void
+  searchHistory(query: string): Promise<HistoryItem[]>
 }

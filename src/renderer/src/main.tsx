@@ -1,11 +1,25 @@
-import { StrictMode } from 'react'
+import { StrictMode, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { StatusView, ToastView } from './Bubbles'
 import { Overlay } from './Overlay'
 import { Sidebar } from './Sidebar'
 import './styles.css'
 
-/** La même page sert la sidebar (fenêtre) et l'overlay (Command bar, recherche dans la page). */
-const isOverlay = new URLSearchParams(location.search).get('view') === 'overlay'
-document.documentElement.dataset.view = isOverlay ? 'overlay' : 'sidebar'
+/**
+ * La même page sert toutes les vues de l'interface, choisie par `?view=` :
+ * sidebar (fenêtre, avec la carte de contenu), sidebar flottante, overlay
+ * (Command bar, recherche, contrôles du site), notification, URL survolée.
+ */
+const params = new URLSearchParams(location.search)
+const view = params.get('view') ?? 'sidebar'
+const floating = params.get('floating') === '1'
+document.documentElement.dataset.view = floating ? 'floating' : view
 
-createRoot(document.getElementById('root')!).render(<StrictMode>{isOverlay ? <Overlay /> : <Sidebar />}</StrictMode>)
+const views: Record<string, ReactNode> = {
+  sidebar: <Sidebar floating={floating} />,
+  overlay: <Overlay />,
+  toast: <ToastView />,
+  status: <StatusView />,
+}
+
+createRoot(document.getElementById('root')!).render(<StrictMode>{views[view] ?? null}</StrictMode>)

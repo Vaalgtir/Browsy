@@ -73,7 +73,8 @@ export function buildMenu(browser: Browser): void {
           { role: 'pasteAndMatchStyle', label: 'Coller sans mise en forme' },
           { role: 'selectAll', label: 'Tout sélectionner' },
           { type: 'separator' },
-          { label: "Copier l'URL", accelerator: 'CmdOrCtrl+Shift+C', click: () => browser.copyActiveUrl() },
+          { label: "Copier l'URL", accelerator: 'CmdOrCtrl+Shift+C', click: () => browser.copyUrl() },
+          { label: "Copier l'URL en Markdown", accelerator: 'Alt+CmdOrCtrl+Shift+C', click: () => browser.copyUrl(undefined, true) },
           { label: 'Rechercher dans la page', accelerator: 'CmdOrCtrl+F', click: () => browser.openFind() },
         ],
       },
@@ -81,6 +82,7 @@ export function buildMenu(browser: Browser): void {
         label: 'Présentation',
         submenu: [
           { label: 'Afficher/masquer la sidebar', accelerator: 'CmdOrCtrl+S', click: () => browser.toggleSidebar() },
+          { label: 'Developer Mode pour ce site', accelerator: 'Alt+CmdOrCtrl+D', click: () => browser.toggleDevMode() },
           { type: 'separator' },
           { label: 'Recharger', accelerator: 'CmdOrCtrl+R', click: () => active()?.reload() },
           { label: 'Recharger sans cache', accelerator: 'CmdOrCtrl+Shift+R', click: () => active()?.reloadIgnoringCache() },
@@ -110,6 +112,7 @@ export function buildMenu(browser: Browser): void {
         label: 'Onglets',
         submenu: [
           { label: 'Épingler / désépingler', accelerator: 'CmdOrCtrl+D', click: () => browser.togglePinActive() },
+          { label: 'Split View', accelerator: 'Ctrl+Shift+=', click: () => browser.splitActiveWithNext() },
           { type: 'separator' },
           { label: 'Onglet suivant', accelerator: 'Ctrl+Tab', click: () => browser.selectRelativeTab(1) },
           { label: 'Onglet précédent', accelerator: 'Ctrl+Shift+Tab', click: () => browser.selectRelativeTab(-1) },

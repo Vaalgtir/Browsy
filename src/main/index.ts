@@ -6,6 +6,7 @@ import { loadArcExtensions } from './arcExtensions'
 import { Browser } from './Browser'
 import { CHROME_USER_AGENT } from './chromeIdentity'
 import { attachDevProbe } from './devProbe'
+import { runScenarios } from './devScenario'
 import { buildMenu } from './menu'
 import { partitionOf } from './profiles'
 
@@ -34,10 +35,11 @@ app.on('open-url', (event, url) => {
 })
 
 function registerIpc(): void {
-  ipcMain.handle('ui:dispatch', (_e, action: BrowserAction | OverlayAction) => browser?.dispatch(action))
+  ipcMain.handle('ui:dispatch', (e, action: BrowserAction | OverlayAction) => browser?.dispatch(action, e.sender))
   ipcMain.handle('ui:get-state', () => browser?.uiState())
   ipcMain.handle('ui:get-overlay', () => browser?.overlayState() ?? { kind: 'hidden' })
   ipcMain.handle('ui:suggest', (_e, query: string) => browser?.suggest(query) ?? [])
+  ipcMain.handle('ui:history', (_e, query: string) => browser?.searchHistory(query) ?? [])
 }
 
 app.whenReady().then(async () => {
@@ -74,6 +76,9 @@ app.whenReady().then(async () => {
       writeFileSync(`${process.env.BROWSY_CAPTURE}-overlay.png`, (await b.overlayWebContents.capturePage()).toPNG())
       console.log('[capture] overlay ok')
     }, 6000)
+  }
+  if (process.env.BROWSY_SCENARIO && process.env.BROWSY_CAPTURE) {
+    void runScenarios(browser, process.env.BROWSY_SCENARIO.split(','), process.env.BROWSY_CAPTURE)
   }
   for (const url of pendingUrls.splice(0)) await browser.newTab(url)
 })

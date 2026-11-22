@@ -1,23 +1,7 @@
 import { Menu, MenuItem, WebContentsView, clipboard, type BrowserWindow } from 'electron'
+import { computeLayout, roundRect, splitPanes, type Layout, type LayoutInput } from '../shared/layout'
 import type { Id, LiveTab } from '../shared/model'
 import type { ProfileContext } from './profiles'
-
-/** Marge autour de la carte de contenu et rayon de ses coins, comme dans Arc. */
-export const CONTENT_INSET = 8
-const CONTENT_RADIUS = 10
-
-export const DEFAULT_SEARCH = (q: string) => `https://www.google.com/search?q=${encodeURIComponent(q)}`
-
-/** Transforme ce qui est tapé dans la barre d'adresse en URL. */
-export function resolveInput(input: string): string {
-  const text = input.trim()
-  if (!text) return 'https://www.google.com/'
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) || /^(about|chrome|data|file|view-source):/i.test(text)) return text
-  if (/^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(:\d+)?(\/.*)?$/i.test(text)) return `http://${text}`
-  if (/^[\w-]+\.(local|test|localhost)(:\d+)?(\/.*)?$/i.test(text)) return `http://${text}`
-  if (!/\s/.test(text) && /^[^/\s]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(text)) return `https://${text}`
-  return DEFAULT_SEARCH(text)
-}
 
 export interface TabViewEvents {
   /** URL, titre ou favicon ont changé. */
@@ -29,18 +13,31 @@ export interface TabViewEvents {
   onOpenTab(fromId: Id, url: string, background: boolean): void
   onFoundInPage(id: Id, matches: number, activeMatch: number): void
   onClosedByPage(id: Id): void
+  /** Survol d'un lien dans la page (chaîne vide : plus de survol). */
+  onHoverLink(id: Id, url: string): void
+  onFocusTab(id: Id): void
+  searchUrl(query: string): string
 }
 
 /**
  * Vues web des onglets. Une vue n'est créée qu'au premier affichage de l'onglet
  * et peut être déchargée (fermeture d'un onglet épinglé, archivage).
+ * Plusieurs vues peuvent être affichées côte à côte (Split View).
  */
 export class TabViews {
   private readonly views = new Map<Id, { view: WebContentsView; profile: ProfileContext }>()
-  private shownId: Id | null = null
   /** Erreurs et avertissements de la console par onglet, remis à zéro à chaque navigation. */
   private readonly consoleCounts = new Map<Id, { errors: number; warnings: number }>()
-  private sidebarWidth = 0
+  private shownIds: Id[] = []
+  private shownSizes: number[] = []
+  private focusedId: Id | null = null
+  private layoutInput: Omit<LayoutInput, 'width' | 'height'> = {
+    sidebarVisible: true,
+    sidebarWidth: 260,
+    position: 'left',
+    fullscreen: false,
+    devBar: false,
+  }
 
   constructor(
     private readonly win: BrowserWindow,
@@ -57,8 +54,8 @@ export class TabViews {
     return this.views.get(id)?.view
   }
 
-  get shown(): Id | null {
-    return this.shownId
+  get shown(): Id[] {
+    return this.shownIds
   }
 
   ids(): Id[] {
@@ -72,7 +69,6 @@ export class TabViews {
     const view = new WebContentsView({
       webPreferences: { session: profile.session, sandbox: true, contextIsolation: true, nodeIntegration: false },
     })
-    view.setBorderRadius(CONTENT_RADIUS)
     view.setBackgroundColor('#ffffff')
     this.views.set(id, { view, profile })
     profile.extensions.addTab(view.webContents, this.win)
@@ -81,17 +77,26 @@ export class TabViews {
     return view
   }
 
-  show(id: Id | null): void {
-    if (this.shownId === id) return this.layout()
-    const previous = this.shownId ? this.views.get(this.shownId) : undefined
-    if (previous) this.win.contentView.removeChildView(previous.view)
-    this.shownId = id
-    const next = id ? this.views.get(id) : undefined
-    if (next) {
-      // Sous l'overlay éventuel : on insère la vue juste au-dessus de l'UI (index 0).
-      this.win.contentView.addChildView(next.view, 0)
-      next.profile.extensions.selectTab(next.view.webContents)
-      next.view.webContents.focus()
+  /** Affiche un onglet, ou plusieurs côte à côte (Split View), et donne le focus à `focusId`. */
+  show(ids: Id[], sizes: number[] = [], focusId: Id | null = ids[0] ?? null): void {
+    const visible = ids.filter((id) => this.views.has(id))
+    for (const id of this.shownIds) {
+      if (!visible.includes(id)) {
+        const entry = this.views.get(id)
+        if (entry) this.win.contentView.removeChildView(entry.view)
+      }
+    }
+    // Sous l'overlay et la sidebar flottante : les pages sont insérées juste au-dessus de l'UI (index 0).
+    visible.forEach((id, i) => {
+      if (!this.shownIds.includes(id)) this.win.contentView.addChildView(this.views.get(id)!.view, i)
+    })
+    this.shownIds = visible
+    this.shownSizes = sizes.length === visible.length ? sizes : visible.map(() => 1 / Math.max(1, visible.length))
+    this.focusedId = focusId && visible.includes(focusId) ? focusId : (visible[0] ?? null)
+    if (this.focusedId) {
+      const entry = this.views.get(this.focusedId)!
+      entry.profile.extensions.selectTab(entry.view.webContents)
+      entry.view.webContents.focus()
     }
     this.layout()
   }
@@ -101,35 +106,36 @@ export class TabViews {
     if (!entry) return
     this.views.delete(id)
     this.consoleCounts.delete(id)
-    if (this.shownId === id) {
+    if (this.shownIds.includes(id)) {
       this.win.contentView.removeChildView(entry.view)
-      this.shownId = null
+      this.shownIds = this.shownIds.filter((x) => x !== id)
+      if (this.focusedId === id) this.focusedId = this.shownIds[0] ?? null
     }
     entry.profile.extensions.removeTab(entry.view.webContents)
     entry.view.webContents.close()
+    this.layout()
     this.events.onLiveChange()
   }
 
-  setSidebarWidth(width: number): void {
-    this.sidebarWidth = Math.max(0, Math.round(width))
+  setLayout(patch: Partial<Omit<LayoutInput, 'width' | 'height'>>): void {
+    this.layoutInput = { ...this.layoutInput, ...patch }
     this.layout()
   }
 
-  /** Zone occupée par la carte de contenu (aussi utilisée pour placer l'overlay). */
-  contentBounds(): Electron.Rectangle {
+  currentLayout(): Layout {
     const [width, height] = this.win.getContentSize()
-    const left = this.sidebarWidth || CONTENT_INSET
-    return {
-      x: left,
-      y: CONTENT_INSET,
-      width: Math.max(0, width - left - CONTENT_INSET),
-      height: Math.max(0, height - CONTENT_INSET * 2),
-    }
+    return computeLayout({ ...this.layoutInput, width, height })
   }
 
   layout(): void {
-    const entry = this.shownId ? this.views.get(this.shownId) : undefined
-    if (entry) entry.view.setBounds(this.contentBounds())
+    const { page, radius } = this.currentLayout()
+    const panes = splitPanes(page, this.shownSizes)
+    this.shownIds.forEach((id, i) => {
+      const view = this.views.get(id)?.view
+      if (!view) return
+      view.setBorderRadius(radius)
+      view.setBounds(roundRect(panes[i] ?? page))
+    })
   }
 
   live(): Record<Id, LiveTab> {
@@ -156,9 +162,8 @@ export class TabViews {
     wc.on('did-start-loading', live)
     wc.on('did-stop-loading', live)
     wc.on('audio-state-changed', live)
-    wc.on('page-title-updated', (_e, title) => {
-      this.events.onRecordChange(id, { title })
-    })
+    wc.on('zoom-changed', live)
+    wc.on('page-title-updated', (_e, title) => this.events.onRecordChange(id, { title }))
     wc.on('page-favicon-updated', (_e, favicons) => this.events.onRecordChange(id, { favicon: favicons[0] }))
     const navigated = () => {
       this.events.onRecordChange(id, { url: wc.getURL(), title: wc.getTitle() })
@@ -181,6 +186,8 @@ export class TabViews {
     })
     wc.on('did-navigate-in-page', (_e, _url, isMainFrame) => isMainFrame && navigated())
     wc.on('found-in-page', (_e, result) => this.events.onFoundInPage(id, result.matches, result.activeMatchOrdinal))
+    wc.on('update-target-url', (_e, url) => this.events.onHoverLink(id, url))
+    wc.on('focus', () => this.events.onFocusTab(id))
     wc.on('destroyed', () => {
       if (this.views.has(id)) {
         this.views.delete(id)
@@ -232,7 +239,7 @@ export class TabViews {
     } else if (params.selectionText) {
       const text = params.selectionText.trim().slice(0, 40)
       add({ role: 'copy', label: 'Copier' })
-      add({ label: `Rechercher « ${text} »`, click: () => this.events.onOpenTab(id, DEFAULT_SEARCH(params.selectionText), false) })
+      add({ label: `Rechercher « ${text} »`, click: () => this.events.onOpenTab(id, this.events.searchUrl(params.selectionText), false) })
       add({ type: 'separator' })
     } else if (!params.linkURL && params.mediaType === 'none') {
       add({ label: 'Précédent', enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() })

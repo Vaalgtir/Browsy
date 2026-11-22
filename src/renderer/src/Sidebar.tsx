@@ -1,21 +1,39 @@
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import type { DownloadInfo, UiState } from '../../shared/ipc'
-import { favoritesOf, type FolderNode, type Id, type SidebarNode, type Space, type TabLocation } from '../../shared/model'
+import type { BrowserAction, UiState } from '../../shared/ipc'
+import { SIDEBAR_MAX, SIDEBAR_MIN } from '../../shared/layout'
+import {
+  favoritesOf,
+  tabTitle,
+  type FolderNode,
+  type Id,
+  type SidebarNode,
+  type Space,
+  type SplitNode,
+  type TabLocation,
+} from '../../shared/model'
+import { Backdrop } from './Backdrop'
+import { ExtensionButtons } from './ExtensionButtons'
 import {
   IconBack,
   IconChevron,
   IconClose,
-  IconDownload,
   IconFolder,
   IconForward,
+  IconLibrary,
+  IconLink,
+  IconMore,
   IconPlus,
   IconReload,
   IconReturn,
+  IconSidebar,
+  IconSliders,
   IconSpeaker,
 } from './icons'
+import { Library } from './Library'
+import { SpaceIcon } from './SpaceIcon'
+import { applyTheme } from './theme'
 import { browsy, displayHost, useUiState } from './useBrowser'
 
-const SIDEBAR_WIDTH = 260
 const DRAG_TYPE = 'application/x-browsy-tab'
 const SWIPE_THRESHOLD = 70
 const SWIPE_COOLDOWN_MS = 450
@@ -23,33 +41,57 @@ const SWIPE_COOLDOWN_MS = 450
 /** Cible de dépôt pendant un glisser-déposer. */
 interface DropTarget extends TabLocation {
   index: number
-  /** Repère visuel : identifiant du nœud et position de la ligne d'insertion. */
   markerId?: string
   markerSide?: 'before' | 'after' | 'inside'
 }
 
-type Dispatch = ReturnType<typeof browsy>['dispatch']
+type Dispatch = (action: BrowserAction) => Promise<void>
+const dispatch: Dispatch = (action) => browsy().dispatch(action)
 
-export function Sidebar() {
+interface DnD {
+  drop: DropTarget | null
+  setDrop(target: DropTarget | null): void
+  commit(e: DragEvent): void
+}
+
+interface Editing {
+  space: Id | null
+  folder: Id | null
+  tab: Id | null
+  set(patch: Partial<Pick<Editing, 'space' | 'folder' | 'tab'>>): void
+}
+
+/**
+ * Sidebar façon Arc. Rendue dans la fenêtre (avec le fond et la carte de contenu)
+ * ou dans la vue flottante qui apparaît au bord quand la sidebar est masquée.
+ */
+export function Sidebar({ floating = false }: { floating?: boolean }) {
   const state = useUiState()
-  const [editingSpace, setEditingSpace] = useState<Id | null>(null)
-  const [editingFolder, setEditingFolder] = useState<Id | null>(null)
+  const [editing, setEditing] = useState({ space: null as Id | null, folder: null as Id | null, tab: null as Id | null })
   const [drop, setDrop] = useState<DropTarget | null>(null)
+  const [libraryOpen, setLibraryOpen] = useState(false)
   const [direction, setDirection] = useState<'left' | 'right'>('right')
+  const [enterKey, setEnterKey] = useState(0)
+  const [dragWidth, setDragWidth] = useState<number | null>(null)
   const previousSpace = useRef<Id | null>(null)
   const swipe = useRef({ accumulated: 0, lockedUntil: 0 })
 
-  useEffect(() => {
-    browsy().dispatch({ type: 'ui.sidebarWidth', width: SIDEBAR_WIDTH })
-    return browsy().onEvent((event) => {
-      if (event.type === 'rename-space') setEditingSpace(event.id)
-      if (event.type === 'rename-folder') setEditingFolder(event.id)
-    })
-  }, [])
+  useEffect(
+    () =>
+      browsy().onEvent((event) => {
+        if (event.type === 'rename-space') setEditing((e) => ({ ...e, space: event.id }))
+        if (event.type === 'rename-folder') setEditing((e) => ({ ...e, folder: event.id }))
+        if (event.type === 'rename-tab') setEditing((e) => ({ ...e, tab: event.id }))
+        if (event.type === 'floating-show') setEnterKey((k) => k + 1)
+      }),
+    [],
+  )
 
-  // Sens de l'animation de changement de Space : vers la droite si le Space suivant est à droite.
   const spaces = state?.persisted.spaces ?? []
   const activeSpaceId = state?.persisted.activeSpaceId ?? null
+  const space = spaces.find((s) => s.id === activeSpaceId) ?? spaces[0]
+
+  // Sens de l'animation de changement de Space : vers la droite si le Space suivant est à droite.
   useLayoutEffect(() => {
     if (!activeSpaceId) return
     const prev = previousSpace.current
@@ -61,18 +103,21 @@ export function Sidebar() {
     previousSpace.current = activeSpaceId
   }, [activeSpaceId, spaces])
 
-  // La teinte du Space colore toute la fenêtre (marges autour de la page comprises).
-  const theme = spaces.find((s) => s.id === activeSpaceId)?.theme
+  // Thème du Space sur toute la page (fond, grain, apparence claire ou sombre).
+  const theme = space?.theme
   useLayoutEffect(() => {
     if (!theme) return
-    document.documentElement.style.setProperty('--space-from', theme.colors[0])
-    document.documentElement.style.setProperty('--space-to', theme.colors.at(-1) ?? theme.colors[0])
+    applyTheme(theme)
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => applyTheme(theme)
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
   }, [theme])
 
-  if (!state) return null
-  const { persisted } = state
-  const space = persisted.spaces.find((s) => s.id === persisted.activeSpaceId) ?? persisted.spaces[0]
-  const dispatch: Dispatch = (action) => browsy().dispatch(action)
+  if (!state || !space) return null
+  const { settings } = state.persisted
+  const width = dragWidth ?? settings.sidebarWidth
+  const showDocked = floating || state.sidebarVisible
 
   /** Glissement horizontal à deux doigts sur la sidebar : Space précédent / suivant. */
   const onWheel = (e: React.WheelEvent) => {
@@ -81,8 +126,8 @@ export function Sidebar() {
     if (Date.now() < s.lockedUntil) return
     s.accumulated += e.deltaX
     if (Math.abs(s.accumulated) < SWIPE_THRESHOLD) return
-    const i = persisted.spaces.findIndex((sp) => sp.id === space.id)
-    const next = persisted.spaces[i + (s.accumulated > 0 ? 1 : -1)]
+    const i = spaces.findIndex((sp) => sp.id === space.id)
+    const next = spaces[i + (s.accumulated > 0 ? 1 : -1)]
     s.accumulated = 0
     s.lockedUntil = Date.now() + SWIPE_COOLDOWN_MS
     if (next) dispatch({ type: 'space.select', id: next.id })
@@ -96,89 +141,78 @@ export function Sidebar() {
       const id = e.dataTransfer.getData(DRAG_TYPE)
       const target = drop
       setDrop(null)
-      if (id && target) dispatch({ type: 'tab.move', id, to: { section: target.section, spaceId: target.spaceId, folderId: target.folderId }, index: target.index })
+      if (id && target) {
+        dispatch({ type: 'tab.move', id, to: { section: target.section, spaceId: target.spaceId, folderId: target.folderId }, index: target.index })
+      }
     },
   }
+  const edit: Editing = { ...editing, set: (patch) => setEditing((e) => ({ ...e, ...patch })) }
 
-  return (
+  const sidebar = (
     <aside
       className="sidebar"
-      style={{ width: SIDEBAR_WIDTH }}
+      data-position={settings.sidebarPosition}
+      data-floating={floating || undefined}
+      style={{ width }}
       onWheel={onWheel}
       onDragEnd={() => setDrop(null)}
     >
-      <Toolbar state={state} dispatch={dispatch} />
-      <UrlPill state={state} dispatch={dispatch} />
-      <browser-action-list className="extensions" partition={state.partition} alignment="bottom right" />
+      <TopBar state={state} floating={floating} />
+      <UrlBar state={state} />
+      <Favorites state={state} space={space} dnd={dnd} edit={edit} />
 
-      <Favorites state={state} space={space} dispatch={dispatch} dnd={dnd} />
+      {libraryOpen ? (
+        <Library state={state} onClose={() => setLibraryOpen(false)} />
+      ) : (
+        <div className="space-content" key={space.id} data-direction={direction}>
+          <SpaceTitle space={space} edit={edit} />
+          <section className="pinned" onDragOver={(e) => acceptDrag(e, { section: 'pinned', spaceId: space.id, index: -1 }, dnd)} onDrop={dnd.commit}>
+            <NodeList nodes={space.pinned} state={state} space={space} dnd={dnd} edit={edit} section="pinned" />
+          </section>
 
-      <div className="space-content" key={space.id} data-direction={direction}>
-        <SpaceHeader
-          space={space}
-          editing={editingSpace === space.id}
-          onDone={() => setEditingSpace(null)}
-          onEdit={() => setEditingSpace(space.id)}
-          dispatch={dispatch}
-        />
+          <div className="today-divider">
+            <span className="divider" />
+            {space.today.length > 0 && (
+              <button className="clear-button" onClick={() => dispatch({ type: 'today.clear', spaceId: space.id })}>
+                ↓ Effacer
+              </button>
+            )}
+          </div>
 
-        <section
-          className="pinned"
-          onDragOver={(e) => acceptDrag(e, { section: 'pinned', spaceId: space.id, index: -1 }, dnd)}
-          onDrop={dnd.commit}
-        >
-          <NodeList
-            nodes={space.pinned}
-            state={state}
-            space={space}
-            dispatch={dispatch}
-            dnd={dnd}
-            editingFolder={editingFolder}
-            setEditingFolder={setEditingFolder}
-          />
-        </section>
+          <button className="row new-tab" onClick={() => dispatch({ type: 'ui.commandBar', mode: 'new-tab' })}>
+            <span className="row-icon">
+              <IconPlus />
+            </span>
+            <span className="title">Nouvel onglet</span>
+          </button>
 
-        <TodayHeader space={space} dispatch={dispatch} />
+          <section className="today" onDragOver={(e) => acceptDrag(e, { section: 'today', spaceId: space.id, index: -1 }, dnd)} onDrop={dnd.commit}>
+            <NodeList nodes={space.today} state={state} space={space} dnd={dnd} edit={edit} section="today" />
+          </section>
+        </div>
+      )}
 
-        <button className="row new-tab" onClick={() => dispatch({ type: 'ui.commandBar', mode: 'new-tab' })}>
-          <span className="row-icon">
-            <IconPlus />
-          </span>
-          <span className="title">Nouvel onglet</span>
-        </button>
-
-        <section
-          className="today"
-          onDragOver={(e) => acceptDrag(e, { section: 'today', spaceId: space.id, index: -1 }, dnd)}
-          onDrop={dnd.commit}
-        >
-          {space.today.map((node, index) => (
-            <TabRow
-              key={node.type === 'tab' ? node.id : node.id}
-              id={node.type === 'tab' ? node.id : node.tabs[0]}
-              state={state}
-              dispatch={dispatch}
-              dnd={dnd}
-              location={{ section: 'today', spaceId: space.id }}
-              index={index}
-            />
-          ))}
-        </section>
-      </div>
-
-      <DownloadsList downloads={state.downloads} dispatch={dispatch} />
-      <SpaceBar state={state} dispatch={dispatch} />
+      <BottomBar state={state} libraryOpen={libraryOpen} onLibrary={() => setLibraryOpen((o) => !o)} />
+      {!floating && <ResizeHandle position={settings.sidebarPosition} onResize={setDragWidth} />}
     </aside>
+  )
+
+  if (floating) {
+    return (
+      <div className="floating-panel" key={enterKey} data-position={settings.sidebarPosition}>
+        {sidebar}
+      </div>
+    )
+  }
+  return (
+    <>
+      <Backdrop state={state} />
+      {showDocked && sidebar}
+    </>
   )
 }
 
 // ── Glisser-déposer ──────────────────────────────────────────────────────
-
-interface DnD {
-  drop: DropTarget | null
-  setDrop(target: DropTarget | null): void
-  commit(e: DragEvent): void
-}
 
 /** Accepte le survol d'un onglet glissé et mémorise la cible de dépôt. */
 function acceptDrag(e: DragEvent, target: DropTarget, dnd: DnD): void {
@@ -186,14 +220,14 @@ function acceptDrag(e: DragEvent, target: DropTarget, dnd: DnD): void {
   e.preventDefault()
   e.stopPropagation()
   e.dataTransfer.dropEffect = 'move'
-  const current = dnd.drop
+  const c = dnd.drop
   if (
-    !current ||
-    current.section !== target.section ||
-    current.index !== target.index ||
-    current.folderId !== target.folderId ||
-    current.markerId !== target.markerId ||
-    current.markerSide !== target.markerSide
+    !c ||
+    c.section !== target.section ||
+    c.index !== target.index ||
+    c.folderId !== target.folderId ||
+    c.markerId !== target.markerId ||
+    c.markerSide !== target.markerSide
   ) {
     dnd.setDrop(target)
   }
@@ -206,27 +240,35 @@ function sideOf(e: DragEvent): 'before' | 'after' {
 }
 
 function markerClass(dnd: DnD, markerId: string): string {
-  if (dnd.drop?.markerId !== markerId) return ''
-  return ` drop-${dnd.drop.markerSide}`
+  return dnd.drop?.markerId === markerId ? ` drop-${dnd.drop.markerSide}` : ''
 }
 
-// ── Barre du haut ────────────────────────────────────────────────────────
+function startDrag(e: DragEvent, id: Id): void {
+  e.dataTransfer.setData(DRAG_TYPE, id)
+  e.dataTransfer.effectAllowed = 'move'
+}
 
-function Toolbar({ state, dispatch }: { state: UiState; dispatch: Dispatch }) {
+// ── Barre du haut et barre d'URL ─────────────────────────────────────────
+
+function TopBar({ state, floating }: { state: UiState; floating: boolean }) {
   const id = state.activeTabId
   const live = id ? state.live[id] : undefined
   return (
-    <div className="toolbar">
+    <div className="topbar">
       <div className="traffic-lights" />
+      <button
+        className="icon-button"
+        onClick={() => dispatch({ type: 'ui.toggleSidebar' })}
+        aria-label={floating ? 'Garder la sidebar' : 'Masquer la sidebar'}
+        title="Afficher/masquer la sidebar (⌘S)"
+      >
+        <IconSidebar />
+      </button>
+      <span className="topbar-spacer" />
       <button className="icon-button" disabled={!live?.canGoBack} onClick={() => id && dispatch({ type: 'tab.back', id })} aria-label="Précédent">
         <IconBack />
       </button>
-      <button
-        className="icon-button"
-        disabled={!live?.canGoForward}
-        onClick={() => id && dispatch({ type: 'tab.forward', id })}
-        aria-label="Suivant"
-      >
+      <button className="icon-button" disabled={!live?.canGoForward} onClick={() => id && dispatch({ type: 'tab.forward', id })} aria-label="Suivant">
         <IconForward />
       </button>
       <button className="icon-button" disabled={!id} onClick={() => id && dispatch({ type: 'tab.reload', id })} aria-label="Recharger">
@@ -236,194 +278,151 @@ function Toolbar({ state, dispatch }: { state: UiState; dispatch: Dispatch }) {
   )
 }
 
-function UrlPill({ state, dispatch }: { state: UiState; dispatch: Dispatch }) {
-  const tab = state.activeTabId ? state.persisted.tabs[state.activeTabId] : undefined
-  const loading = state.activeTabId ? state.live[state.activeTabId]?.loading : false
+function UrlBar({ state }: { state: UiState }) {
+  const id = state.activeTabId
+  const tab = id ? state.persisted.tabs[id] : undefined
+  const loading = id ? state.live[id]?.loading : false
+  const controlsRef = useRef<HTMLButtonElement>(null)
+  const openControls = () => {
+    const r = controlsRef.current?.getBoundingClientRect()
+    if (r) dispatch({ type: 'ui.siteControls', anchor: { x: r.left, y: r.top, width: r.width, height: r.height } })
+  }
   return (
-    <button className="url-pill" data-loading={loading || undefined} onClick={() => dispatch({ type: 'ui.commandBar', mode: 'edit-url' })}>
-      <span className="url-text">{tab ? displayHost(tab.url) : 'Rechercher ou saisir une URL'}</span>
-    </button>
+    <div className="url-bar" data-loading={loading || undefined}>
+      <button className="url-text" onClick={() => dispatch({ type: 'ui.commandBar', mode: tab ? 'edit-url' : 'new-tab' })}>
+        {tab ? displayHost(tab.url) : 'Rechercher ou saisir une URL'}
+      </button>
+      {tab && (
+        <div className="url-actions">
+          <ExtensionButtons state={state} />
+          <button className="url-action" onClick={() => dispatch({ type: 'tab.copyUrl' })} aria-label="Copier le lien" title="Copier le lien (⌘⇧C)">
+            <IconLink />
+          </button>
+          <button ref={controlsRef} className="url-action" onClick={openControls} aria-label="Contrôles du site" title="Contrôles du site">
+            <IconSliders />
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
 // ── Favorites ────────────────────────────────────────────────────────────
 
-function Favorites({ state, space, dispatch, dnd }: { state: UiState; space: Space; dispatch: Dispatch; dnd: DnD }) {
+function Favorites({ state, space, dnd, edit }: { state: UiState; space: Space; dnd: DnD; edit: Editing }) {
   const favorites = favoritesOf(state.persisted, space.profileId)
   const dragging = dnd.drop?.section === 'favorites'
+  const columns = state.persisted.settings.sidebarWidth >= 330 ? 4 : 3
+  const endTarget: DropTarget = { section: 'favorites', spaceId: space.id, index: -1, markerId: 'favorites-end', markerSide: 'after' }
+  if (!favorites.length) {
+    // Zone de dépôt discrète, qui ne se révèle que pendant un glisser.
+    return (
+      <section className={dragging ? 'favorites-empty dropping' : 'favorites-empty'} onDragOver={(e) => acceptDrag(e, endTarget, dnd)} onDrop={dnd.commit}>
+        {dragging && 'Déposer ici pour ajouter aux favoris'}
+      </section>
+    )
+  }
   return (
-    <section
-      className={favorites.length || dragging ? 'favorites' : 'favorites empty'}
-      onDragOver={(e) => acceptDrag(e, { section: 'favorites', spaceId: space.id, index: -1, markerId: 'favorites-end', markerSide: 'after' }, dnd)}
-      onDrop={dnd.commit}
-    >
+    <section className="favorites" style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }} onDragOver={(e) => acceptDrag(e, endTarget, dnd)} onDrop={dnd.commit}>
       {favorites.map((id, index) => {
         const tab = state.persisted.tabs[id]
         if (!tab) return null
         const live = state.live[id]
         const markerId = `fav-${id}`
+        const active = state.activeTabId === id
         return (
-          <button
-            key={id}
-            className={`favorite${state.activeTabId === id ? ' active' : ''}${live ? '' : ' unloaded'}${markerClass(dnd, markerId)}`}
-            title={tab.title || tab.url}
-            draggable
-            onDragStart={(e) => startDrag(e, id)}
-            onDragOver={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect()
-              const before = e.clientX < rect.left + rect.width / 2
-              acceptDrag(e, { section: 'favorites', spaceId: space.id, index: before ? index : index + 1, markerId, markerSide: before ? 'before' : 'after' }, dnd)
-            }}
-            onMouseDown={(e) => e.button === 0 && dispatch({ type: 'tab.select', id })}
-            onContextMenu={() => dispatch({ type: 'tab.contextMenu', id })}
-          >
-            <Favicon src={tab.favicon} url={tab.url} size={20} />
-            {live?.audible && <span className="audio-dot" />}
-          </button>
+          <div key={id} className="favorite-cell">
+            <button
+              className={`favorite${active ? ' active' : ''}${markerClass(dnd, markerId)}`}
+              title={tabTitle(tab)}
+              draggable
+              onDragStart={(e) => startDrag(e, id)}
+              onDragOver={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect()
+                const before = e.clientX < rect.left + rect.width / 2
+                acceptDrag(e, { section: 'favorites', spaceId: space.id, index: before ? index : index + 1, markerId, markerSide: before ? 'before' : 'after' }, dnd)
+              }}
+              onMouseDown={(e) => e.button === 0 && dispatch({ type: 'tab.select', id })}
+              onAuxClick={(e) => e.button === 1 && dispatch({ type: 'tab.close', id })}
+              onContextMenu={() => dispatch({ type: 'tab.contextMenu', id })}
+            >
+              <Favicon src={tab.favicon} url={tab.url} size={20} />
+              {live?.audible && <span className="favorite-dot audio" />}
+            </button>
+            {edit.tab === id && (
+              <InlineEdit
+                className="favorite-rename"
+                initial={tabTitle(tab)}
+                onCommit={(title) => {
+                  dispatch({ type: 'tab.rename', id, title })
+                  edit.set({ tab: null })
+                }}
+                onCancel={() => edit.set({ tab: null })}
+              />
+            )}
+          </div>
         )
       })}
-      {!favorites.length && <span className="favorites-hint">Glisser un onglet ici pour l'ajouter aux favoris</span>}
     </section>
   )
 }
 
-// ── En-tête du Space ─────────────────────────────────────────────────────
+// ── Titre du Space ───────────────────────────────────────────────────────
 
 const EMOJI_PREFIX = /^(\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic})*)\s*/u
 
-function SpaceHeader({
-  space,
-  editing,
-  onEdit,
-  onDone,
-  dispatch,
-}: {
-  space: Space
-  editing: boolean
-  onEdit(): void
-  onDone(): void
-  dispatch: Dispatch
-}) {
-  const label = `${space.icon ? `${space.icon} ` : ''}${space.name}`
-  if (editing) {
+function SpaceTitle({ space, edit }: { space: Space; edit: Editing }) {
+  if (edit.space === space.id) {
+    const label = `${space.icon && !space.icon.startsWith('icon:') ? `${space.icon} ` : ''}${space.name}`
     return (
       <InlineEdit
-        className="space-name editing"
+        className="space-title editing"
         initial={label}
         onCommit={(value) => {
           const match = value.match(EMOJI_PREFIX)
-          dispatch({ type: 'space.update', id: space.id, icon: match?.[1] ?? '', name: value.replace(EMOJI_PREFIX, '') || space.name })
-          onDone()
+          const icon = match?.[1] ?? (space.icon.startsWith('icon:') ? space.icon : '')
+          dispatch({ type: 'space.update', id: space.id, icon, name: value.replace(EMOJI_PREFIX, '') || space.name })
+          edit.set({ space: null })
         }}
-        onCancel={onDone}
+        onCancel={() => edit.set({ space: null })}
       />
     )
   }
   return (
-    <div className="space-name" onDoubleClick={onEdit} onContextMenu={() => dispatch({ type: 'space.contextMenu', id: space.id })}>
-      {space.icon && <span className="space-emoji">{space.icon}</span>}
-      <span>{space.name}</span>
+    <div className="space-title" onDoubleClick={() => edit.set({ space: space.id })} onContextMenu={() => dispatch({ type: 'space.contextMenu', id: space.id })}>
+      <SpaceIcon icon={space.icon} name={space.name} size={14} />
+      <span className="space-name">{space.name}</span>
+      <button className="space-more" aria-label="Options du Space" onClick={() => dispatch({ type: 'space.contextMenu', id: space.id })}>
+        <IconMore />
+      </button>
     </div>
   )
 }
 
-function TodayHeader({ space, dispatch }: { space: Space; dispatch: Dispatch }) {
-  return (
-    <div className="today-header">
-      <span className="divider" />
-      {space.today.length > 0 && (
-        <button className="clear-button" onClick={() => dispatch({ type: 'today.clear', spaceId: space.id })}>
-          Effacer
-        </button>
-      )}
-    </div>
-  )
-}
+// ── Onglets épinglés, dossiers, Split Views ──────────────────────────────
 
-// ── Onglets épinglés et dossiers ─────────────────────────────────────────
-
-function NodeList({
-  nodes,
-  folderId,
-  state,
-  space,
-  dispatch,
-  dnd,
-  editingFolder,
-  setEditingFolder,
-}: {
-  nodes: SidebarNode[]
-  folderId?: Id
+interface ListProps {
   state: UiState
   space: Space
-  dispatch: Dispatch
   dnd: DnD
-  editingFolder: Id | null
-  setEditingFolder(id: Id | null): void
-}) {
+  edit: Editing
+}
+
+function NodeList({ nodes, folderId, section, ...props }: ListProps & { nodes: SidebarNode[]; folderId?: Id; section: 'pinned' | 'today' }) {
+  const location: TabLocation = { section, spaceId: props.space.id, folderId }
   return (
     <>
-      {nodes.map((node, index) =>
-        node.type === 'tab' ? (
-          <TabRow
-            key={node.id}
-            id={node.id}
-            state={state}
-            dispatch={dispatch}
-            dnd={dnd}
-            location={{ section: 'pinned', spaceId: space.id, folderId }}
-            index={index}
-          />
-        ) : node.type === 'split' ? (
-          <TabRow
-            key={node.id}
-            id={node.tabs[0]}
-            state={state}
-            dispatch={dispatch}
-            dnd={dnd}
-            location={{ section: 'pinned', spaceId: space.id, folderId }}
-            index={index}
-          />
-        ) : (
-          <FolderRow
-            key={node.id}
-            folder={node}
-            parentFolderId={folderId}
-            index={index}
-            state={state}
-            space={space}
-            dispatch={dispatch}
-            dnd={dnd}
-            editingFolder={editingFolder}
-            setEditingFolder={setEditingFolder}
-          />
-        ),
-      )}
+      {nodes.map((node, index) => {
+        if (node.type === 'tab') return <TabRow key={node.id} id={node.id} location={location} index={index} {...props} />
+        if (node.type === 'split') return <SplitRow key={node.id} split={node} location={location} index={index} {...props} />
+        return <FolderRow key={node.id} folder={node} parentFolderId={folderId} index={index} {...props} />
+      })}
     </>
   )
 }
 
-function FolderRow({
-  folder,
-  parentFolderId,
-  index,
-  state,
-  space,
-  dispatch,
-  dnd,
-  editingFolder,
-  setEditingFolder,
-}: {
-  folder: FolderNode
-  parentFolderId?: Id
-  index: number
-  state: UiState
-  space: Space
-  dispatch: Dispatch
-  dnd: DnD
-  editingFolder: Id | null
-  setEditingFolder(id: Id | null): void
-}) {
+function FolderRow({ folder, parentFolderId, index, ...props }: ListProps & { folder: FolderNode; parentFolderId?: Id; index: number }) {
+  const { space, dnd, edit } = props
   const markerId = `folder-${folder.id}`
   return (
     <div className="folder">
@@ -431,11 +430,10 @@ function FolderRow({
         className={`row folder-row${markerClass(dnd, markerId)}`}
         onClick={() => dispatch({ type: 'folder.toggle', spaceId: space.id, id: folder.id })}
         onContextMenu={() => dispatch({ type: 'folder.contextMenu', spaceId: space.id, id: folder.id })}
-        onDoubleClick={() => setEditingFolder(folder.id)}
+        onDoubleClick={() => edit.set({ folder: folder.id })}
         onDragOver={(e) => {
           // Moitié haute : avant le dossier ; moitié basse : dedans.
-          const side = sideOf(e)
-          if (side === 'before') acceptDrag(e, { section: 'pinned', spaceId: space.id, folderId: parentFolderId, index, markerId, markerSide: 'before' }, dnd)
+          if (sideOf(e) === 'before') acceptDrag(e, { section: 'pinned', spaceId: space.id, folderId: parentFolderId, index, markerId, markerSide: 'before' }, dnd)
           else acceptDrag(e, { section: 'pinned', spaceId: space.id, folderId: folder.id, index: 0, markerId, markerSide: 'inside' }, dnd)
         }}
         onDrop={dnd.commit}
@@ -443,15 +441,15 @@ function FolderRow({
         <span className="row-icon">
           <IconFolder />
         </span>
-        {editingFolder === folder.id ? (
+        {edit.folder === folder.id ? (
           <InlineEdit
             className="title editing"
             initial={folder.title}
             onCommit={(title) => {
               dispatch({ type: 'folder.rename', spaceId: space.id, id: folder.id, title })
-              setEditingFolder(null)
+              edit.set({ folder: null })
             }}
-            onCancel={() => setEditingFolder(null)}
+            onCancel={() => edit.set({ folder: null })}
           />
         ) : (
           <span className="title">{folder.title}</span>
@@ -460,79 +458,69 @@ function FolderRow({
       </div>
       {folder.open && (
         <div className="folder-children">
-          <NodeList
-            nodes={folder.children}
-            folderId={folder.id}
-            state={state}
-            space={space}
-            dispatch={dispatch}
-            dnd={dnd}
-            editingFolder={editingFolder}
-            setEditingFolder={setEditingFolder}
-          />
+          <NodeList nodes={folder.children} folderId={folder.id} section="pinned" {...props} />
         </div>
       )}
     </div>
   )
 }
 
-// ── Ligne d'onglet ───────────────────────────────────────────────────────
-
-function startDrag(e: DragEvent, id: Id): void {
-  e.dataTransfer.setData(DRAG_TYPE, id)
-  e.dataTransfer.effectAllowed = 'move'
-}
-
-function TabRow({
-  id,
-  state,
-  dispatch,
-  dnd,
-  location,
-  index,
-}: {
-  id: Id
-  state: UiState
-  dispatch: Dispatch
-  dnd: DnD
-  location: TabLocation
-  index: number
-}) {
+function TabRow({ id, location, index, state, dnd, edit }: ListProps & { id: Id; location: TabLocation; index: number }) {
   const tab = state.persisted.tabs[id]
   if (!tab) return null
   const live = state.live[id]
   const active = state.activeTabId === id
   const markerId = `tab-${id}`
-  const awayFromPinned = !!tab.pinnedUrl && displayHost(tab.pinnedUrl) !== displayHost(tab.url)
-  const classes = ['row', 'tab', active && 'active', !live && location.section !== 'today' && 'unloaded', live?.loading && 'loading']
-    .filter(Boolean)
-    .join(' ')
+  const pinned = location.section === 'pinned'
+  // Onglet épinglé parti de son URL d'origine : « Nom / page actuelle », comme Arc.
+  const away = pinned && !!tab.pinnedUrl && tab.url !== tab.pinnedUrl
+  const rootTitle = tab.customTitle || displayHost(tab.pinnedUrl ?? tab.url)
+  const classes = ['row', 'tab', active && 'active', !live && pinned && 'unloaded', live?.loading && 'loading'].filter(Boolean).join(' ')
 
   return (
     <div
       className={classes + markerClass(dnd, markerId)}
       title={tab.url}
-      draggable
+      draggable={edit.tab !== id}
       onDragStart={(e) => startDrag(e, id)}
       onDragOver={(e) => {
         const side = sideOf(e)
         acceptDrag(e, { ...location, index: side === 'before' ? index : index + 1, markerId, markerSide: side }, dnd)
       }}
       onDrop={dnd.commit}
-      onMouseDown={(e) => e.button === 0 && dispatch({ type: 'tab.select', id })}
+      onMouseDown={(e) => e.button === 0 && edit.tab !== id && dispatch({ type: 'tab.select', id })}
       onAuxClick={(e) => e.button === 1 && dispatch({ type: 'tab.close', id })}
+      onDoubleClick={() => pinned && edit.set({ tab: id })}
       onContextMenu={() => dispatch({ type: 'tab.contextMenu', id })}
     >
       <span className="row-icon">
         <Favicon src={tab.favicon} url={tab.url} />
       </span>
-      <span className="title">{tab.title || displayHost(tab.url) || 'Nouvel onglet'}</span>
+      {edit.tab === id ? (
+        <InlineEdit
+          className="title editing"
+          initial={tabTitle(tab)}
+          onCommit={(title) => {
+            dispatch({ type: 'tab.rename', id, title })
+            edit.set({ tab: null })
+          }}
+          onCancel={() => edit.set({ tab: null })}
+        />
+      ) : away ? (
+        <span className="title">
+          <span className="pinned-root">{rootTitle}</span>
+          <span className="slash">/</span>
+          {tab.title || displayHost(tab.url)}
+        </span>
+      ) : (
+        <span className="title">{tabTitle(tab) || displayHost(tab.url) || 'Nouvel onglet'}</span>
+      )}
       {(live?.audible || live?.muted) && (
         <RowButton label={live.muted ? 'Réactiver le son' : 'Couper le son'} onClick={() => dispatch({ type: 'tab.toggleMute', id })} visible>
           <IconSpeaker muted={live.muted} />
         </RowButton>
       )}
-      {awayFromPinned && (
+      {away && (
         <RowButton label="Revenir à l'URL d'origine" onClick={() => dispatch({ type: 'tab.resetToPinned', id })}>
           <IconReturn />
         </RowButton>
@@ -542,6 +530,44 @@ function TabRow({
           <IconClose />
         </RowButton>
       )}
+    </div>
+  )
+}
+
+/** Split View : une ligne, un segment par onglet (cliquable). */
+function SplitRow({ split, location, index, state, dnd }: ListProps & { split: SplitNode; location: TabLocation; index: number }) {
+  const markerId = `split-${split.id}`
+  const active = split.tabs.includes(state.activeTabId ?? '')
+  return (
+    <div
+      className={`row split${active ? ' active' : ''}${markerClass(dnd, markerId)}`}
+      onDragOver={(e) => {
+        const side = sideOf(e)
+        acceptDrag(e, { ...location, index: side === 'before' ? index : index + 1, markerId, markerSide: side }, dnd)
+      }}
+      onDrop={dnd.commit}
+    >
+      {split.tabs.map((tabId) => {
+        const tab = state.persisted.tabs[tabId]
+        if (!tab) return null
+        return (
+          <button
+            key={tabId}
+            className={active && state.activeTabId === tabId ? 'split-part focused' : 'split-part'}
+            title={tab.url}
+            draggable
+            onDragStart={(e) => startDrag(e, tabId)}
+            onMouseDown={(e) => e.button === 0 && dispatch({ type: 'tab.select', id: tabId })}
+            onContextMenu={(e) => {
+              e.stopPropagation()
+              dispatch({ type: 'tab.contextMenu', id: tabId })
+            }}
+          >
+            <Favicon src={tab.favicon} url={tab.url} />
+            <span className="split-title">{tabTitle(tab)}</span>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -564,7 +590,7 @@ function RowButton({ label, onClick, visible, children }: { label: string; onCli
 }
 
 /** Favicon du site, ou son initiale tant qu'il n'a jamais été chargé. */
-function Favicon({ src, url, size = 16 }: { src?: string; url?: string; size?: number }) {
+export function Favicon({ src, url, size = 16 }: { src?: string; url?: string; size?: number }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [src])
   if (!src || failed) {
@@ -578,74 +604,75 @@ function Favicon({ src, url, size = 16 }: { src?: string; url?: string; size?: n
   return <img className="favicon" src={src} width={size} height={size} alt="" draggable={false} onError={() => setFailed(true)} />
 }
 
-// ── Téléchargements ──────────────────────────────────────────────────────
+// ── Barre du bas ─────────────────────────────────────────────────────────
 
-function DownloadsList({ downloads, dispatch }: { downloads: DownloadInfo[]; dispatch: Dispatch }) {
-  const recent = downloads.slice(0, 3)
-  if (!recent.length) return null
-  return (
-    <section className="downloads">
-      <div className="downloads-header">
-        <span>Téléchargements</span>
-        {downloads.some((d) => d.state !== 'progressing') && (
-          <button className="clear-button" onClick={() => dispatch({ type: 'download.clear' })}>
-            Effacer
-          </button>
-        )}
-      </div>
-      {recent.map((d) => {
-        const progress = d.totalBytes ? d.receivedBytes / d.totalBytes : 0
-        return (
-          <div
-            key={d.id}
-            className={`row download ${d.state}`}
-            title={d.path}
-            onClick={() => dispatch({ type: d.state === 'completed' ? 'download.open' : 'download.reveal', id: d.id })}
-            onContextMenu={() => dispatch({ type: 'download.reveal', id: d.id })}
-          >
-            <span className="row-icon">
-              <IconDownload />
-            </span>
-            <span className="title">{d.filename}</span>
-            {d.state === 'progressing' && (
-              <span className="progress" style={{ '--progress': progress } as React.CSSProperties} />
-            )}
-          </div>
-        )
-      })}
-    </section>
-  )
-}
-
-// ── Barre des Spaces ─────────────────────────────────────────────────────
-
-function SpaceBar({ state, dispatch }: { state: UiState; dispatch: Dispatch }) {
+function BottomBar({ state, libraryOpen, onLibrary }: { state: UiState; libraryOpen: boolean; onLibrary(): void }) {
   const { spaces, activeSpaceId } = state.persisted
+  const downloading = state.downloads.some((d) => d.state === 'progressing')
   return (
-    <nav className="space-bar">
-      {spaces.map((space) => (
-        <button
-          key={space.id}
-          className={space.id === activeSpaceId ? 'space-dot active' : 'space-dot'}
-          title={space.name}
-          aria-label={space.name}
-          style={{ '--dot': space.theme.colors[0] } as React.CSSProperties}
-          onClick={() => dispatch({ type: 'space.select', id: space.id })}
-          onContextMenu={() => dispatch({ type: 'space.contextMenu', id: space.id })}
-        >
-          {space.icon ? <span className="space-emoji">{space.icon}</span> : <span className="dot" />}
-        </button>
-      ))}
-      <button className="icon-button" onClick={() => dispatch({ type: 'space.new' })} aria-label="Nouveau Space" title="Nouveau Space">
+    <nav className="bottom-bar">
+      <button className={`icon-button${libraryOpen ? ' pressed' : ''}`} onClick={onLibrary} aria-label="Library" title="Library : téléchargements, archive, historique">
+        <IconLibrary />
+        {downloading && <span className="activity-dot" />}
+      </button>
+      <div className="space-switcher">
+        {spaces.map((space) => (
+          <button
+            key={space.id}
+            className={space.id === activeSpaceId ? 'space-button active' : 'space-button'}
+            title={space.name}
+            aria-label={space.name}
+            onClick={() => dispatch({ type: 'space.select', id: space.id })}
+            onContextMenu={() => dispatch({ type: 'space.contextMenu', id: space.id })}
+          >
+            <SpaceIcon icon={space.icon} name={space.name} size={15} />
+          </button>
+        ))}
+      </div>
+      <button className="icon-button" onClick={() => dispatch({ type: 'space.newMenu' })} aria-label="Nouveau" title="Nouveau Space, dossier ou onglet">
         <IconPlus />
       </button>
     </nav>
   )
 }
 
+// ── Redimensionnement ────────────────────────────────────────────────────
+
+/** Poignée sur le bord intérieur de la sidebar : suit la souris 1:1. */
+function ResizeHandle({ position, onResize }: { position: 'left' | 'right'; onResize(width: number | null): void }) {
+  const frame = useRef(0)
+  const widthAt = (clientX: number) =>
+    Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(position === 'left' ? clientX : window.innerWidth - clientX)))
+  return (
+    <div
+      className="resize-handle"
+      data-position={position}
+      title="Glisser pour redimensionner, double-clic pour la largeur par défaut"
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId)
+        e.preventDefault()
+      }}
+      onPointerMove={(e) => {
+        if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+        const width = widthAt(e.clientX)
+        onResize(width)
+        cancelAnimationFrame(frame.current)
+        frame.current = requestAnimationFrame(() => dispatch({ type: 'ui.sidebarWidth', width }))
+      }}
+      onPointerUp={(e) => {
+        if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+        e.currentTarget.releasePointerCapture(e.pointerId)
+        cancelAnimationFrame(frame.current)
+        void dispatch({ type: 'ui.sidebarWidth', width: widthAt(e.clientX), commit: true }).then(() => onResize(null))
+      }}
+      onDoubleClick={() => dispatch({ type: 'ui.sidebarWidth', width: 260, commit: true })}
+    />
+  )
+}
+
 // ── Édition en place ─────────────────────────────────────────────────────
 
-function InlineEdit({
+export function InlineEdit({
   initial,
   className,
   onCommit,
@@ -676,6 +703,7 @@ function InlineEdit({
       defaultValue={initial}
       spellCheck={false}
       onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
       onBlur={() => finish(true)}
       onKeyDown={(e) => {
         if (e.key === 'Enter') finish(true)
