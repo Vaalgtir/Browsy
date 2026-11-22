@@ -10,7 +10,8 @@
     "start": "env -u ELECTRON_RUN_AS_NODE electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "postinstall": "install-electron",
-    "dev:arc": "env -u ELECTRON_RUN_AS_NODE BROWSY_ARC_EXTENSIONS=1 electron-vite dev"
+    "dev:arc": "env -u ELECTRON_RUN_AS_NODE BROWSY_ARC_EXTENSIONS=1 electron-vite dev",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
@@ -20,7 +21,8 @@
     "electron": "^45.4.1",
     "electron-vite": "^6.0.0",
     "typescript": "^7.0.2",
-    "vite": "^8.3.8"
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
   },
   "dependencies": {
     "electron-chrome-extensions": "^4.10.0",

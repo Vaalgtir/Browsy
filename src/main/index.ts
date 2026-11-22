@@ -1,15 +1,16 @@
-import { join } from 'node:path'
-import { BrowserWindow, Menu, app, ipcMain, session, type Session } from 'electron'
+import { app, ipcMain, session } from 'electron'
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
-import { installChromeWebStore } from 'electron-chrome-web-store'
-import { BROWSING_PARTITION, type BrowserState } from '../shared/ipc'
+import type { BrowserAction, OverlayAction } from '../shared/ipc'
+import { DEFAULT_PROFILE_ID } from '../shared/model'
 import { loadArcExtensions } from './arcExtensions'
+import { Browser } from './Browser'
+import { CHROME_USER_AGENT } from './chromeIdentity'
 import { attachDevProbe } from './devProbe'
-import { CHROME_USER_AGENT, installChromeIdentity } from './chromeIdentity'
-import { TabManager, resolveInput } from './TabManager'
+import { buildMenu } from './menu'
+import { partitionOf } from './profiles'
 
-app.userAgentFallback = CHROME_USER_AGENT
 app.setName('Browsy')
+app.userAgentFallback = CHROME_USER_AGENT
 // Dev : profil séparé (tests automatisés sans toucher aux sessions de l'utilisateur).
 if (process.env.BROWSY_USER_DATA) app.setPath('userData', process.env.BROWSY_USER_DATA)
 
@@ -19,183 +20,69 @@ if (process.env.BROWSY_USER_DATA) app.setPath('userData', process.env.BROWSY_USE
 // bascule sur la popup classique, comme dans Brave.
 app.commandLine.appendSwitch('disable-features', 'FedCm')
 
-let win: BrowserWindow | null = null
-let tabs: TabManager | null = null
+// Une seule instance : un lien ouvert depuis une autre app arrive dans la fenêtre existante.
+if (!app.requestSingleInstanceLock()) app.quit()
 
-function sendState(state: BrowserState): void {
-  if (win && !win.isDestroyed()) win.webContents.send('browser:state', state)
-}
+let browser: Browser | null = null
+/** Liens reçus avant que le navigateur soit prêt (lancement via un lien). */
+const pendingUrls: string[] = []
 
-function createWindow(browsing: Session, extensions: ElectronChromeExtensions): void {
-  win = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 600,
-    minHeight: 400,
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 16, y: 16 },
-    vibrancy: 'sidebar',
-    visualEffectState: 'active',
-    backgroundColor: '#00000000',
-    show: false,
-    webPreferences: {
-      preload: join(__dirname, '../preload/ui.js'),
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
-  tabs = new TabManager(win, browsing, extensions, sendState)
-  win.once('ready-to-show', () => win?.show())
-  win.on('closed', () => {
-    win = null
-    tabs = null
-  })
-
-  if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  else win.loadFile(join(__dirname, '../renderer/index.html'))
-
-  win.webContents.once('did-finish-load', () => {
-    const first = tabs?.create(process.env.BROWSY_START_URL || undefined)
-    if (first && win) attachDevProbe(win, first)
-  })
-}
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  if (browser) void browser.newTab(url)
+  else pendingUrls.push(url)
+})
 
 function registerIpc(): void {
-  const withTab = (id: number, fn: (wc: Electron.WebContents) => void) => {
-    const view = tabs?.get(id)
-    if (view) fn(view.webContents)
-  }
-  ipcMain.handle('tab:new', (_e, url?: string) => void tabs?.create(url ? resolveInput(url) : undefined))
-  ipcMain.handle('tab:close', (_e, id: number) => tabs?.close(id))
-  ipcMain.handle('tab:select', (_e, id: number) => tabs?.select(id))
-  ipcMain.handle('tab:navigate', (_e, id: number, input: string) =>
-    withTab(id, (wc) => {
-      wc.loadURL(resolveInput(input))
-      wc.focus()
-    }),
-  )
-  ipcMain.handle('tab:back', (_e, id: number) => withTab(id, (wc) => wc.navigationHistory.goBack()))
-  ipcMain.handle('tab:forward', (_e, id: number) => withTab(id, (wc) => wc.navigationHistory.goForward()))
-  ipcMain.handle('tab:reload', (_e, id: number) => withTab(id, (wc) => wc.reload()))
-  ipcMain.handle('ui:sidebar-width', (_e, width: number) => tabs?.setSidebarWidth(width))
-  ipcMain.handle('browser:get-state', () => tabs?.getState() ?? { tabs: [], activeTabId: null })
-}
-
-function buildMenu(): void {
-  const active = () => tabs?.active?.webContents
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate([
-      { role: 'appMenu' },
-      {
-        label: 'Fichier',
-        submenu: [
-          { label: 'Nouvel onglet', accelerator: 'CmdOrCtrl+T', click: () => tabs?.create() },
-          { label: "Barre d'adresse", accelerator: 'CmdOrCtrl+L', click: () => win?.webContents.send('ui:focus-address') },
-          {
-            label: "Fermer l'onglet",
-            accelerator: 'CmdOrCtrl+W',
-            click: () => {
-              const id = tabs?.getState().activeTabId
-              if (id != null) tabs?.close(id)
-            },
-          },
-        ],
-      },
-      { role: 'editMenu' },
-      {
-        label: 'Présentation',
-        submenu: [
-          { label: 'Recharger', accelerator: 'CmdOrCtrl+R', click: () => active()?.reload() },
-          { label: 'Recharger sans cache', accelerator: 'CmdOrCtrl+Shift+R', click: () => active()?.reloadIgnoringCache() },
-          { type: 'separator' },
-          { label: 'Outils de développement', accelerator: 'Alt+CmdOrCtrl+I', click: () => active()?.toggleDevTools() },
-          { label: "DevTools de l'interface Browsy", accelerator: 'Alt+Shift+CmdOrCtrl+I', click: () => win?.webContents.toggleDevTools() },
-          { type: 'separator' },
-          { label: 'Zoom avant', accelerator: 'CmdOrCtrl+Plus', click: () => zoom(0.5) },
-          { label: 'Zoom arrière', accelerator: 'CmdOrCtrl+-', click: () => zoom(-0.5) },
-          { label: 'Taille réelle', accelerator: 'CmdOrCtrl+0', click: () => active()?.setZoomLevel(0) },
-          { type: 'separator' },
-          { role: 'togglefullscreen' },
-        ],
-      },
-      {
-        label: 'Historique',
-        submenu: [
-          { label: 'Précédent', accelerator: 'CmdOrCtrl+[', click: () => active()?.navigationHistory.goBack() },
-          { label: 'Suivant', accelerator: 'CmdOrCtrl+]', click: () => active()?.navigationHistory.goForward() },
-        ],
-      },
-      {
-        label: 'Onglets',
-        submenu: [
-          { label: 'Onglet suivant', accelerator: 'Ctrl+Tab', click: () => tabs?.selectRelative(1) },
-          { label: 'Onglet précédent', accelerator: 'Ctrl+Shift+Tab', click: () => tabs?.selectRelative(-1) },
-        ],
-      },
-      { role: 'windowMenu' },
-    ]),
-  )
-
-  function zoom(delta: number) {
-    const wc = active()
-    if (wc) wc.setZoomLevel(wc.getZoomLevel() + delta)
-  }
+  ipcMain.handle('ui:dispatch', (_e, action: BrowserAction | OverlayAction) => browser?.dispatch(action))
+  ipcMain.handle('ui:get-state', () => browser?.uiState())
+  ipcMain.handle('ui:get-overlay', () => browser?.overlayState() ?? { kind: 'hidden' })
+  ipcMain.handle('ui:suggest', (_e, query: string) => browser?.suggest(query) ?? [])
 }
 
 app.whenReady().then(async () => {
-  const browsing = session.fromPartition(BROWSING_PARTITION)
-  installChromeIdentity(browsing)
-
-  const extensions = new ElectronChromeExtensions({
-    session: browsing,
-    async createTab(details) {
-      if (!win || !tabs) throw new Error('Aucune fenêtre')
-      const view = tabs.create(details.url, { activate: details.active !== false })
-      return [view.webContents, win]
-    },
-    selectTab(wc) {
-      tabs?.select(wc.id)
-    },
-    removeTab(wc) {
-      tabs?.close(wc.id)
-    },
-    async createWindow(details) {
-      // Phase 0 : une seule fenêtre, on ouvre les URLs demandées dans des onglets.
-      const urls = Array.isArray(details.url) ? details.url : details.url ? [details.url] : []
-      for (const url of urls) tabs?.create(url)
-      if (!win) throw new Error('Aucune fenêtre')
-      return win
-    },
-  })
-  // Après le preload de la lib : correctifs de compatibilité (voir src/preload/compat.ts).
-  const compatPreload = join(__dirname, '../preload/compat.js')
-  browsing.registerPreloadScript({ id: 'browsy-compat-frame', type: 'frame', filePath: compatPreload })
-  browsing.registerPreloadScript({ id: 'browsy-compat-sw', type: 'service-worker', filePath: compatPreload })
   // Icônes d'extensions (<browser-action-list>) affichées dans l'UI, qui vit dans la session par défaut.
   ElectronChromeExtensions.handleCRXProtocol(session.defaultSession)
+  registerIpc()
 
-  await installChromeWebStore({ session: browsing, allowUnpackedExtensions: true })
-  if (process.env.BROWSY_DEBUG_SW === '1') {
-    // Phase 0 : affiche les logs des service workers d'extensions dans le terminal.
-    browsing.serviceWorkers.on('console-message', (_event, details) => {
-      console.log(`[sw] ${details.sourceUrl}:${details.lineNumber} ${details.message}`)
-    })
+  browser = new Browser()
+  buildMenu(browser)
+  await browser.start()
+
+  if (process.env.BROWSY_ARC_EXTENSIONS === '1') {
+    await loadArcExtensions(session.fromPartition(partitionOf(DEFAULT_PROFILE_ID)))
   }
   if (process.env.BROWSY_LOAD_EXTENSION) {
-    await browsing.extensions.loadExtension(process.env.BROWSY_LOAD_EXTENSION, { allowFileAccess: true })
+    await session.fromPartition(partitionOf(DEFAULT_PROFILE_ID)).extensions.loadExtension(process.env.BROWSY_LOAD_EXTENSION, { allowFileAccess: true })
   }
-  if (process.env.BROWSY_ARC_EXTENSIONS === '1') await loadArcExtensions(browsing)
-
-  registerIpc()
-  buildMenu()
-  createWindow(browsing, extensions)
-
-  app.on('activate', () => {
-    if (!win) createWindow(browsing, extensions)
-  })
+  const startUrl = process.env.BROWSY_START_URL
+  if (startUrl) {
+    const id = await browser.newTab(startUrl)
+    const view = browser.viewOf(id)
+    if (view) attachDevProbe(browser.win, view)
+  }
+  const commandBarQuery = process.env.BROWSY_PROBE_COMMANDBAR
+  if (commandBarQuery !== undefined && process.env.BROWSY_CAPTURE) {
+    // Dev : ouvre la Command bar, tape une requête et capture l'overlay.
+    const b = browser
+    setTimeout(async () => {
+      b.openCommandBar('new-tab')
+      await new Promise((r) => setTimeout(r, 500))
+      b.overlayWebContents.insertText(commandBarQuery)
+      await new Promise((r) => setTimeout(r, 1500))
+      const { writeFileSync } = await import('node:fs')
+      writeFileSync(`${process.env.BROWSY_CAPTURE}-overlay.png`, (await b.overlayWebContents.capturePage()).toPNG())
+      console.log('[capture] overlay ok')
+    }, 6000)
+  }
+  for (const url of pendingUrls.splice(0)) await browser.newTab(url)
 })
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+app.on('second-instance', (_event, argv) => {
+  browser?.win.show()
+  const url = argv.find((arg) => /^https?:\/\//.test(arg))
+  if (url) void browser?.newTab(url)
 })
+
+app.on('activate', () => browser?.win.show())
+app.on('before-quit', () => browser?.flush())
