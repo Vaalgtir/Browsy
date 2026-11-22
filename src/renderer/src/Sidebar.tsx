@@ -65,8 +65,8 @@ export function Sidebar() {
   const theme = spaces.find((s) => s.id === activeSpaceId)?.theme
   useLayoutEffect(() => {
     if (!theme) return
-    document.documentElement.style.setProperty('--space-from', theme.from)
-    document.documentElement.style.setProperty('--space-to', theme.to)
+    document.documentElement.style.setProperty('--space-from', theme.colors[0])
+    document.documentElement.style.setProperty('--space-to', theme.colors.at(-1) ?? theme.colors[0])
   }, [theme])
 
   if (!state) return null
@@ -152,10 +152,10 @@ export function Sidebar() {
           onDragOver={(e) => acceptDrag(e, { section: 'today', spaceId: space.id, index: -1 }, dnd)}
           onDrop={dnd.commit}
         >
-          {space.today.map((id, index) => (
+          {space.today.map((node, index) => (
             <TabRow
-              key={id}
-              id={id}
+              key={node.type === 'tab' ? node.id : node.id}
+              id={node.type === 'tab' ? node.id : node.tabs[0]}
               state={state}
               dispatch={dispatch}
               dnd={dnd}
@@ -368,6 +368,16 @@ function NodeList({
           <TabRow
             key={node.id}
             id={node.id}
+            state={state}
+            dispatch={dispatch}
+            dnd={dnd}
+            location={{ section: 'pinned', spaceId: space.id, folderId }}
+            index={index}
+          />
+        ) : node.type === 'split' ? (
+          <TabRow
+            key={node.id}
+            id={node.tabs[0]}
             state={state}
             dispatch={dispatch}
             dnd={dnd}
@@ -619,7 +629,7 @@ function SpaceBar({ state, dispatch }: { state: UiState; dispatch: Dispatch }) {
           className={space.id === activeSpaceId ? 'space-dot active' : 'space-dot'}
           title={space.name}
           aria-label={space.name}
-          style={{ '--dot': space.theme.from } as React.CSSProperties}
+          style={{ '--dot': space.theme.colors[0] } as React.CSSProperties}
           onClick={() => dispatch({ type: 'space.select', id: space.id })}
           onContextMenu={() => dispatch({ type: 'space.contextMenu', id: space.id })}
         >

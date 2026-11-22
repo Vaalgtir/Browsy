@@ -38,6 +38,8 @@ export interface TabViewEvents {
 export class TabViews {
   private readonly views = new Map<Id, { view: WebContentsView; profile: ProfileContext }>()
   private shownId: Id | null = null
+  /** Erreurs et avertissements de la console par onglet, remis à zéro à chaque navigation. */
+  private readonly consoleCounts = new Map<Id, { errors: number; warnings: number }>()
   private sidebarWidth = 0
 
   constructor(
@@ -98,6 +100,7 @@ export class TabViews {
     const entry = this.views.get(id)
     if (!entry) return
     this.views.delete(id)
+    this.consoleCounts.delete(id)
     if (this.shownId === id) {
       this.win.contentView.removeChildView(entry.view)
       this.shownId = null
@@ -139,6 +142,9 @@ export class TabViews {
         canGoForward: wc.navigationHistory.canGoForward(),
         audible: wc.isCurrentlyAudible(),
         muted: wc.isAudioMuted(),
+        consoleErrors: this.consoleCounts.get(id)?.errors ?? 0,
+        consoleWarnings: this.consoleCounts.get(id)?.warnings ?? 0,
+        zoom: wc.getZoomFactor(),
       }
     }
     return result
@@ -158,6 +164,17 @@ export class TabViews {
       this.events.onRecordChange(id, { url: wc.getURL(), title: wc.getTitle() })
       live()
     }
+    wc.on('console-message', (event) => {
+      if (event.level !== 'error' && event.level !== 'warning') return
+      const counts = this.consoleCounts.get(id) ?? { errors: 0, warnings: 0 }
+      if (event.level === 'error') counts.errors++
+      else counts.warnings++
+      this.consoleCounts.set(id, counts)
+      live()
+    })
+    wc.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) this.consoleCounts.delete(id)
+    })
     wc.on('did-navigate', () => {
       navigated()
       this.events.onVisit(id, wc.getURL(), wc.getTitle())

@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { BrowserWindow, Menu, clipboard, dialog, net, type WebContents } from 'electron'
 import type { BrowserAction, OverlayAction, OverlayState, Suggestion, UiEvent, UiState } from '../shared/ipc'
 import {
-  SPACE_THEMES,
+  SPACE_PALETTE,
   activeSpace,
   addTab,
   archiveTab,
@@ -17,6 +17,7 @@ import {
   newId,
   profileOfTab,
   removeTab,
+  tabIdsIn,
   tabsToArchive,
   visibleTabOrder,
   type Id,
@@ -24,6 +25,7 @@ import {
   type TabLocation,
   type TabRecord,
 } from '../shared/model'
+import { hasArcData, importArc, readArcData } from './arcImport'
 import { Downloads } from './downloads'
 import { History } from './history'
 import { Overlay } from './Overlay'
@@ -33,7 +35,7 @@ import { TabViews, resolveInput } from './TabViews'
 
 const ARCHIVE_CHECK_MS = 5 * 60 * 1000
 const MAX_CLOSED = 30
-const THEME_NAMES = ['Lavande', 'Pêche', 'Menthe', 'Rose', 'Citron', 'Ciel', 'Lilas', 'Gris']
+const COLOR_NAMES = ['Bleuet', 'Lilas', 'Rose', 'Pêche', 'Citron', 'Pistache', 'Menthe', 'Ciel', 'Gris', 'Ardoise']
 
 interface ClosedTab {
   record: TabRecord
@@ -115,6 +117,7 @@ export class Browser {
   async start(): Promise<void> {
     await this.profile(activeSpace(this.state).profileId)
     this.archiveStale()
+    if (!this.state.settings.arcImport && hasArcData()) setTimeout(() => void this.importFromArc(true), 800)
     const space = activeSpace(this.state)
     if (space.activeTabId) await this.selectTab(space.activeTabId)
     this.broadcast()
@@ -249,7 +252,7 @@ export class Browser {
     const wasActive = space.activeTabId === id
     let next: Id | undefined
     if (wasActive) {
-      const order = space.today
+      const order = tabIdsIn(space.today)
       const i = order.indexOf(id)
       next = i >= 0 ? (order[i + 1] ?? order[i - 1]) : order[0]
     }
@@ -327,6 +330,43 @@ export class Browser {
   copyActiveUrl(): void {
     const url = this.activeWebContents()?.getURL()
     if (url) clipboard.writeText(url)
+  }
+
+  // ── Import Arc ──────────────────────────────────────────────────────────
+
+  /** Importe Spaces, épinglés, favoris, Developer Mode et Air Traffic Control depuis Arc. */
+  async importFromArc(firstLaunch = false): Promise<void> {
+    if (!hasArcData()) {
+      await dialog.showMessageBox(this.win, { type: 'info', message: "Aucune donnée d'Arc trouvée sur ce Mac." })
+      return
+    }
+    const { response } = await dialog.showMessageBox(this.win, {
+      type: 'question',
+      message: 'Importer tes Spaces depuis Arc ?',
+      detail:
+        'Spaces (thèmes et icônes), onglets épinglés, dossiers, Split Views, favoris, sites en Developer Mode et règles d\'Air Traffic Control. ' +
+        'Les données d\'Arc ne sont pas modifiées. Les connexions aux sites (cookies) ne sont pas reprises.',
+      buttons: firstLaunch ? ['Importer', 'Plus tard', 'Ne plus demander'] : ['Importer', 'Annuler'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (response === 2) {
+      this.state.settings.arcImport = 'declined'
+      this.broadcast()
+    }
+    if (response !== 0) return
+    try {
+      const summary = importArc(this.state, readArcData())
+      await this.selectSpace(this.state.activeSpaceId)
+      this.broadcast()
+      await dialog.showMessageBox(this.win, {
+        type: 'info',
+        message: 'Import terminé',
+        detail: `${summary.spaces} Spaces, ${summary.pinned} onglets épinglés, ${summary.favorites} favoris, ${summary.devModeHosts} sites en Developer Mode, ${summary.linkRules} règle(s) de liens.`,
+      })
+    } catch (error) {
+      await dialog.showMessageBox(this.win, { type: 'error', message: "L'import a échoué", detail: String(error) })
+    }
   }
 
   // ── Spaces ──────────────────────────────────────────────────────────────
@@ -518,7 +558,7 @@ export class Browser {
       case 'today.clear': {
         const space = getSpace(s, action.spaceId)
         if (!space) break
-        for (const id of [...space.today]) {
+        for (const id of tabIdsIn(space.today)) {
           this.views.destroy(id)
           archiveTab(s, id)
         }
@@ -651,11 +691,11 @@ export class Browser {
       { label: 'Renommer…', click: () => this.sendEvent({ type: 'rename-space', id: spaceId }) },
       {
         label: 'Couleur',
-        submenu: SPACE_THEMES.map((theme, i) => ({
-          label: THEME_NAMES[i] ?? `Thème ${i + 1}`,
+        submenu: SPACE_PALETTE.map((color, i) => ({
+          label: COLOR_NAMES[i] ?? color,
           type: 'radio' as const,
-          checked: space.theme.from === theme.from,
-          click: () => void this.dispatch({ type: 'space.update', id: spaceId, theme }),
+          checked: space.theme.colors[0] === color,
+          click: () => void this.dispatch({ type: 'space.update', id: spaceId, theme: { ...space.theme, colors: [color] } }),
         })),
       },
       {

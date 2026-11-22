@@ -56,6 +56,8 @@ export function buildMenu(browser: Browser): void {
             },
           },
           { type: 'separator' },
+          { label: 'Importer depuis Arc…', click: () => void browser.importFromArc() },
+          { type: 'separator' },
           { label: 'Imprimer…', accelerator: 'CmdOrCtrl+P', click: () => active()?.print() },
         ],
       },
