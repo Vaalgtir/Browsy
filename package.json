@@ -11,7 +11,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "postinstall": "install-electron",
     "dev:arc": "env -u ELECTRON_RUN_AS_NODE BROWSY_ARC_EXTENSIONS=1 electron-vite dev",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package": "electron-vite build && electron-builder --mac --dir",
+    "install-app": "npm run package && scripts/install-app.sh",
+    "upgrade": "scripts/upgrade.sh"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
@@ -19,6 +22,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.3.0",
     "electron": "^45.4.1",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.8",
@@ -29,5 +33,60 @@
     "electron-chrome-web-store": "^0.13.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
+  },
+  "build": {
+    "appId": "app.browsy.browser",
+    "productName": "Browsy",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSCameraUsageDescription": "Les sites que vous visitez peuvent demander à utiliser votre caméra.",
+        "NSMicrophoneUsageDescription": "Les sites que vous visitez peuvent demander à utiliser votre micro.",
+        "NSLocationUsageDescription": "Les sites que vous visitez peuvent demander votre position.",
+        "NSBluetoothAlwaysUsageDescription": "Les sites que vous visitez peuvent demander à utiliser le Bluetooth.",
+        "LSApplicationCategoryType": "public.app-category.productivity"
+      }
+    },
+    "protocols": [
+      {
+        "name": "Web",
+        "schemes": [
+          "http",
+          "https"
+        ],
+        "role": "Viewer"
+      }
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "html",
+          "htm",
+          "xhtml",
+          "pdf"
+        ],
+        "name": "Document web",
+        "role": "Viewer"
+      }
+    ]
   }
 }

@@ -18,6 +18,19 @@ export function buildMenu(browser: Browser): void {
         submenu: [
           { role: 'about', label: `À propos de ${app.name}` },
           { type: 'separator' },
+          {
+            label: 'Définir comme navigateur par défaut',
+            type: 'checkbox',
+            checked: app.isDefaultProtocolClient('https'),
+            enabled: app.isPackaged,
+            click: (item) => {
+              // macOS demande confirmation à l'utilisateur.
+              app.setAsDefaultProtocolClient('http')
+              app.setAsDefaultProtocolClient('https')
+              item.checked = app.isDefaultProtocolClient('https')
+            },
+          },
+          { type: 'separator' },
           { role: 'services', label: 'Services' },
           { type: 'separator' },
           { role: 'hide', label: `Masquer ${app.name}` },
