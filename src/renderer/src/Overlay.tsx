@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { OverlayState, Suggestion } from '../../shared/ipc'
 import { IconArrowDown, IconArrowUp, IconClock, IconClose, IconGlobe, IconSearch, IconTabs } from './icons'
 import { ExtensionsMenu } from './ExtensionsMenu'
+import { PeekFrame } from './PeekFrame'
+import { ThemeEditor } from './ThemeEditor'
 import { SiteControls } from './SiteControls'
 import { browsy, displayHost, useOverlayState } from './useBrowser'
 
@@ -12,6 +14,8 @@ export function Overlay() {
   if (overlay.kind === 'find') return <FindBar key={overlay.tabId} overlay={overlay} />
   if (overlay.kind === 'site-controls') return <SiteControls site={overlay.site} />
   if (overlay.kind === 'extensions') return <ExtensionsMenu extensions={overlay.extensions} partition={overlay.partition} />
+  if (overlay.kind === 'theme-editor') return <ThemeEditor spaceId={overlay.spaceId} />
+  if (overlay.kind === 'peek') return <PeekFrame peek={overlay} />
   return null
 }
 

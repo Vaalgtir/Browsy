@@ -207,3 +207,21 @@ export const IconPuzzle = () => (
     <path d="M6.5 2.8a1.4 1.4 0 0 1 2.8 0V4h2.2a1 1 0 0 1 1 1v2.2h-1.2a1.4 1.4 0 0 0 0 2.8h1.2v2.2a1 1 0 0 1-1 1H9.3v-1.2a1.4 1.4 0 0 0-2.8 0V13.2H4.3a1 1 0 0 1-1-1V10h1.2a1.4 1.4 0 0 0 0-2.8H3.3V5a1 1 0 0 1 1-1h2.2z" />
   </svg>
 )
+
+export const IconPlay = () => (
+  <svg {...base} width={14} height={14}>
+    <path d="M5 3.5v9l7.5-4.5z" fill="currentColor" />
+  </svg>
+)
+
+export const IconPause = () => (
+  <svg {...base} width={14} height={14}>
+    <path d="M5.5 3.5v9M10.5 3.5v9" strokeWidth={2} />
+  </svg>
+)
+
+export const IconExpand = () => (
+  <svg {...base} width={14} height={14}>
+    <path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9" />
+  </svg>
+)

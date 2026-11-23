@@ -27,8 +27,8 @@ function formatSize(bytes: number): string {
 }
 
 /** Library (bouton en bas à gauche, comme Arc) : téléchargements, onglets archivés, historique. */
-export function Library({ state, onClose }: { state: UiState; onClose(): void }) {
-  const [tab, setTab] = useState<Tab>('downloads')
+export function Library({ state, initialTab = 'downloads', onClose }: { state: UiState; initialTab?: Tab; onClose(): void }) {
+  const [tab, setTab] = useState<Tab>(initialTab)
   const [query, setQuery] = useState('')
   const [history, setHistory] = useState<HistoryItem[]>([])
   const dispatch = browsy().dispatch

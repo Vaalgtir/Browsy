@@ -1,7 +1,9 @@
 import { StrictMode, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { StatusView, ToastView } from './Bubbles'
+import { Little } from './Little'
 import { Overlay } from './Overlay'
+import { Settings } from './Settings'
 import { Sidebar } from './Sidebar'
 import './styles.css'
 
@@ -20,6 +22,8 @@ const views: Record<string, ReactNode> = {
   overlay: <Overlay />,
   toast: <ToastView />,
   status: <StatusView />,
+  settings: <Settings />,
+  little: <Little />,
 }
 
 createRoot(document.getElementById('root')!).render(<StrictMode>{views[view] ?? null}</StrictMode>)

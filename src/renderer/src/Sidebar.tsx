@@ -22,6 +22,8 @@ import {
   IconLibrary,
   IconLink,
   IconMore,
+  IconPause,
+  IconPlay,
   IconPlus,
   IconReload,
   IconReturn,
@@ -70,6 +72,7 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
   const [editing, setEditing] = useState({ space: null as Id | null, folder: null as Id | null, tab: null as Id | null })
   const [drop, setDrop] = useState<DropTarget | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [libraryTab, setLibraryTab] = useState<'downloads' | 'archive' | 'history'>('downloads')
   const [direction, setDirection] = useState<'left' | 'right'>('right')
   const [enterKey, setEnterKey] = useState(0)
   const [dragWidth, setDragWidth] = useState<number | null>(null)
@@ -83,12 +86,16 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
         if (event.type === 'rename-folder') setEditing((e) => ({ ...e, folder: event.id }))
         if (event.type === 'rename-tab') setEditing((e) => ({ ...e, tab: event.id }))
         if (event.type === 'floating-show') setEnterKey((k) => k + 1)
+        if (event.type === 'open-library') {
+          setLibraryTab(event.tab)
+          setLibraryOpen(true)
+        }
       }),
     [],
   )
 
   const spaces = state?.persisted.spaces ?? []
-  const activeSpaceId = state?.persisted.activeSpaceId ?? null
+  const activeSpaceId = state?.spaceId ?? null
   const space = spaces.find((s) => s.id === activeSpaceId) ?? spaces[0]
 
   // Sens de l'animation de changement de Space : vers la droite si le Space suivant est à droite.
@@ -162,7 +169,7 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
       <Favorites state={state} space={space} dnd={dnd} edit={edit} />
 
       {libraryOpen ? (
-        <Library state={state} onClose={() => setLibraryOpen(false)} />
+        <Library key={libraryTab} state={state} initialTab={libraryTab} onClose={() => setLibraryOpen(false)} />
       ) : (
         <div className="space-content" key={space.id} data-direction={direction}>
           <SpaceTitle space={space} edit={edit} />
@@ -192,7 +199,15 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
         </div>
       )}
 
-      <BottomBar state={state} libraryOpen={libraryOpen} onLibrary={() => setLibraryOpen((o) => !o)} />
+      <MediaCards state={state} />
+      <BottomBar
+        state={state}
+        libraryOpen={libraryOpen}
+        onLibrary={() => {
+          setLibraryTab('downloads')
+          setLibraryOpen((o) => !o)
+        }}
+      />
       {!floating && <ResizeHandle position={settings.sidebarPosition} onResize={setDragWidth} />}
     </aside>
   )
@@ -390,7 +405,17 @@ function SpaceTitle({ space, edit }: { space: Space; edit: Editing }) {
   }
   return (
     <div className="space-title" onDoubleClick={() => edit.set({ space: space.id })} onContextMenu={() => dispatch({ type: 'space.contextMenu', id: space.id })}>
-      <SpaceIcon icon={space.icon} name={space.name} size={14} />
+      <button
+        className="space-icon-button"
+        aria-label="Thème et icône du Space"
+        title="Thème et icône du Space"
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect()
+          dispatch({ type: 'ui.themeEditor', spaceId: space.id, anchor: { x: r.left, y: r.top, width: r.width, height: r.height } })
+        }}
+      >
+        <SpaceIcon icon={space.icon} name={space.name} size={14} />
+      </button>
       <span className="space-name">{space.name}</span>
       <button className="space-more" aria-label="Options du Space" onClick={() => dispatch({ type: 'space.contextMenu', id: space.id })}>
         <IconMore />
@@ -604,10 +629,58 @@ export function Favicon({ src, url, size = 16 }: { src?: string; url?: string; s
   return <img className="favicon" src={src} width={size} height={size} alt="" draggable={false} onError={() => setFailed(true)} />
 }
 
+// ── Médias en cours ──────────────────────────────────────────────────────
+
+/** Contrôles des onglets qui jouent un média (hors onglet affiché), comme Arc. */
+function MediaCards({ state }: { state: UiState }) {
+  const ids = state.mediaTabIds.slice(0, 2)
+  if (!ids.length) return null
+  return (
+    <div className="media-cards">
+      {ids.map((id) => {
+        const tab = state.persisted.tabs[id]
+        const live = state.live[id]
+        if (!tab || !live) return null
+        const playing = live.audible
+        return (
+          <div key={id} className="media-card" onClick={() => dispatch({ type: 'tab.select', id })} title={tab.url}>
+            <Favicon src={tab.favicon} url={tab.url} />
+            <span className="media-title">
+              <span className="media-name">{tabTitle(tab)}</span>
+              <span className="media-host">{displayHost(tab.url)}</span>
+            </span>
+            <button
+              className="media-button"
+              aria-label={playing ? 'Pause' : 'Lecture'}
+              onClick={(e) => {
+                e.stopPropagation()
+                dispatch({ type: 'media.toggle', id })
+              }}
+            >
+              {playing ? <IconPause /> : <IconPlay />}
+            </button>
+            <button
+              className="media-button"
+              aria-label={live.muted ? 'Réactiver le son' : 'Couper le son'}
+              onClick={(e) => {
+                e.stopPropagation()
+                dispatch({ type: 'tab.toggleMute', id })
+              }}
+            >
+              <IconSpeaker muted={live.muted} />
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Barre du bas ─────────────────────────────────────────────────────────
 
 function BottomBar({ state, libraryOpen, onLibrary }: { state: UiState; libraryOpen: boolean; onLibrary(): void }) {
-  const { spaces, activeSpaceId } = state.persisted
+  const { spaces } = state.persisted
+  const activeSpaceId = state.spaceId
   const downloading = state.downloads.some((d) => d.state === 'progressing')
   return (
     <nav className="bottom-bar">
@@ -629,7 +702,7 @@ function BottomBar({ state, libraryOpen, onLibrary }: { state: UiState; libraryO
           </button>
         ))}
       </div>
-      <button className="icon-button" onClick={() => dispatch({ type: 'space.newMenu' })} aria-label="Nouveau" title="Nouveau Space, dossier ou onglet">
+      <button className="icon-button" onClick={() => dispatch({ type: 'space.newMenu' })} aria-label="Nouveau" title={state.isPrivate ? 'Nouvel onglet ou dossier' : 'Nouveau Space, dossier ou onglet'}>
         <IconPlus />
       </button>
     </nav>

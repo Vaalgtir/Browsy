@@ -17,6 +17,27 @@ export interface TabViewEvents {
   onHoverLink(id: Id, url: string): void
   onFocusTab(id: Id): void
   searchUrl(query: string): string
+  /** Lien d'un onglet épinglé ou favori vers un autre site : ouvert dans Peek plutôt que dans l'onglet. */
+  shouldPeek(id: Id, url: string): boolean
+  onPeek(id: Id, url: string): void
+}
+
+interface Entry {
+  view: WebContentsView
+  profile: ProfileContext
+  /** Fenêtre qui affiche l'onglet : change quand l'onglet passe dans une autre fenêtre. */
+  owner: TabViews
+}
+
+/**
+ * La lib d'extensions associe chaque onglet à une fenêtre à son ajout, et son retrait
+ * déclenche la fermeture de l'onglet : pour un déplacement, on met à jour l'association.
+ */
+function moveExtensionTab(profile: ProfileContext, wc: Electron.WebContents, win: BrowserWindow): void {
+  const store = (profile.extensions as unknown as { ctx?: { store?: { tabToWindow: Map<unknown, unknown>; addWindow(w: unknown): void } } })?.ctx?.store
+  if (!store) return
+  store.tabToWindow.set(wc, win)
+  store.addWindow(win)
 }
 
 /**
@@ -25,7 +46,7 @@ export interface TabViewEvents {
  * Plusieurs vues peuvent être affichées côte à côte (Split View).
  */
 export class TabViews {
-  private readonly views = new Map<Id, { view: WebContentsView; profile: ProfileContext }>()
+  private readonly views = new Map<Id, Entry>()
   /** Erreurs et avertissements de la console par onglet, remis à zéro à chaque navigation. */
   private readonly consoleCounts = new Map<Id, { errors: number; warnings: number }>()
   private shownIds: Id[] = []
@@ -41,7 +62,7 @@ export class TabViews {
 
   constructor(
     private readonly win: BrowserWindow,
-    private readonly events: TabViewEvents,
+    readonly events: TabViewEvents,
   ) {
     win.on('resize', () => this.layout())
   }
@@ -70,11 +91,55 @@ export class TabViews {
       webPreferences: { session: profile.session, sandbox: true, contextIsolation: true, nodeIntegration: false },
     })
     view.setBackgroundColor('#ffffff')
-    this.views.set(id, { view, profile })
-    profile.extensions.addTab(view.webContents, this.win)
-    this.wire(id, view)
+    const entry: Entry = { view, profile, owner: this }
+    this.views.set(id, entry)
+    profile.extensions?.addTab(view.webContents, this.win)
+    this.wire(id, entry)
     view.webContents.loadURL(url)
     return view
+  }
+
+  /** Prend en charge une vue déjà chargée (Peek, mini-fenêtre) comme onglet de cette fenêtre. */
+  adoptView(id: Id, view: WebContentsView, profile: ProfileContext): void {
+    const entry: Entry = { view, profile, owner: this }
+    view.setBackgroundColor('#ffffff')
+    this.views.set(id, entry)
+    profile.extensions?.addTab(view.webContents, this.win)
+    moveExtensionTab(profile, view.webContents, this.win)
+    this.wire(id, entry)
+    this.events.onLiveChange()
+  }
+
+  /** Retire la vue de cette fenêtre sans la fermer (elle part dans une autre fenêtre). */
+  release(id: Id): Entry | undefined {
+    const entry = this.views.get(id)
+    if (!entry) return undefined
+    this.views.delete(id)
+    if (this.shownIds.includes(id)) {
+      this.win.contentView.removeChildView(entry.view)
+      this.shownIds = this.shownIds.filter((x) => x !== id)
+      if (this.focusedId === id) this.focusedId = this.shownIds[0] ?? null
+      this.layout()
+    }
+    return entry
+  }
+
+  /** Accueille une vue venue d'une autre fenêtre. */
+  adopt(id: Id, entry: Entry): void {
+    entry.owner = this
+    this.views.set(id, entry)
+    moveExtensionTab(entry.profile, entry.view.webContents, this.win)
+  }
+
+  /** Identifiant de l'onglet affiché par ce webContents. */
+  idOf(wc: Electron.WebContents): Id | undefined {
+    for (const [id, entry] of this.views) if (entry.view.webContents === wc) return id
+    return undefined
+  }
+
+  /** Toutes les vues (fermeture de la fenêtre). */
+  destroyAll(): void {
+    for (const id of [...this.views.keys()]) this.destroy(id)
   }
 
   /** Affiche un onglet, ou plusieurs côte à côte (Split View), et donne le focus à `focusId`. */
@@ -95,7 +160,7 @@ export class TabViews {
     this.focusedId = focusId && visible.includes(focusId) ? focusId : (visible[0] ?? null)
     if (this.focusedId) {
       const entry = this.views.get(this.focusedId)!
-      entry.profile.extensions.selectTab(entry.view.webContents)
+      entry.profile.extensions?.selectTab(entry.view.webContents)
       entry.view.webContents.focus()
     }
     this.layout()
@@ -111,8 +176,8 @@ export class TabViews {
       this.shownIds = this.shownIds.filter((x) => x !== id)
       if (this.focusedId === id) this.focusedId = this.shownIds[0] ?? null
     }
-    entry.profile.extensions.removeTab(entry.view.webContents)
-    entry.view.webContents.close()
+    entry.profile.extensions?.removeTab(entry.view.webContents)
+    if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close()
     this.layout()
     this.events.onLiveChange()
   }
@@ -156,56 +221,68 @@ export class TabViews {
     return result
   }
 
-  private wire(id: Id, view: WebContentsView): void {
+  private wire(id: Id, entry: Entry): void {
+    const { view } = entry
     const wc = view.webContents
-    const live = () => this.events.onLiveChange()
+    // Toujours la fenêtre propriétaire du moment : l'onglet peut changer de fenêtre.
+    const ev = () => entry.owner.events
+    const owner = () => entry.owner
+    const live = () => ev().onLiveChange()
     wc.on('did-start-loading', live)
     wc.on('did-stop-loading', live)
     wc.on('audio-state-changed', live)
     wc.on('zoom-changed', live)
-    wc.on('page-title-updated', (_e, title) => this.events.onRecordChange(id, { title }))
-    wc.on('page-favicon-updated', (_e, favicons) => this.events.onRecordChange(id, { favicon: favicons[0] }))
+    wc.on('page-title-updated', (_e, title) => ev().onRecordChange(id, { title }))
+    wc.on('page-favicon-updated', (_e, favicons) => ev().onRecordChange(id, { favicon: favicons[0] }))
     const navigated = () => {
-      this.events.onRecordChange(id, { url: wc.getURL(), title: wc.getTitle() })
+      ev().onRecordChange(id, { url: wc.getURL(), title: wc.getTitle() })
       live()
     }
     wc.on('console-message', (event) => {
       if (event.level !== 'error' && event.level !== 'warning') return
-      const counts = this.consoleCounts.get(id) ?? { errors: 0, warnings: 0 }
+      const counts = owner().consoleCounts.get(id) ?? { errors: 0, warnings: 0 }
       if (event.level === 'error') counts.errors++
       else counts.warnings++
-      this.consoleCounts.set(id, counts)
+      owner().consoleCounts.set(id, counts)
       live()
     })
     wc.on('did-start-navigation', (details) => {
-      if (details.isMainFrame && !details.isSameDocument) this.consoleCounts.delete(id)
+      if (details.isMainFrame && !details.isSameDocument) owner().consoleCounts.delete(id)
+    })
+    wc.on('will-navigate', (event) => {
+      if (event.isMainFrame && ev().shouldPeek(id, event.url)) {
+        event.preventDefault()
+        ev().onPeek(id, event.url)
+      }
     })
     wc.on('did-navigate', () => {
       navigated()
-      this.events.onVisit(id, wc.getURL(), wc.getTitle())
+      ev().onVisit(id, wc.getURL(), wc.getTitle())
     })
     wc.on('did-navigate-in-page', (_e, _url, isMainFrame) => isMainFrame && navigated())
-    wc.on('found-in-page', (_e, result) => this.events.onFoundInPage(id, result.matches, result.activeMatchOrdinal))
-    wc.on('update-target-url', (_e, url) => this.events.onHoverLink(id, url))
-    wc.on('focus', () => this.events.onFocusTab(id))
+    wc.on('found-in-page', (_e, result) => ev().onFoundInPage(id, result.matches, result.activeMatchOrdinal))
+    wc.on('update-target-url', (_e, url) => ev().onHoverLink(id, url))
+    wc.on('focus', () => ev().onFocusTab(id))
     wc.on('destroyed', () => {
-      if (this.views.has(id)) {
-        this.views.delete(id)
-        this.events.onClosedByPage(id)
+      const current = owner()
+      if (current.views.get(id) === entry) {
+        current.views.delete(id)
+        current.events.onClosedByPage(id)
       }
     })
 
-    // target=_blank et clic molette → onglet ; vraies popups (OAuth…) → fenêtre.
+    // target=_blank et clic molette → onglet (ou Peek) ; vraies popups (OAuth…) → fenêtre.
     wc.setWindowOpenHandler(({ url, disposition }) => {
       if (disposition === 'new-window') return { action: 'allow' }
-      this.events.onOpenTab(id, url, disposition === 'background-tab')
+      if (disposition === 'foreground-tab' && ev().shouldPeek(id, url)) ev().onPeek(id, url)
+      else ev().onOpenTab(id, url, disposition === 'background-tab')
       return { action: 'deny' }
     })
 
-    wc.on('context-menu', (_e, params) => this.pageContextMenu(id, view, params))
+    wc.on('context-menu', (_e, params) => owner().pageContextMenu(id, view, params))
   }
 
-  private pageContextMenu(id: Id, view: WebContentsView, params: Electron.ContextMenuParams): void {
+  pageContextMenu(id: Id, view: WebContentsView, params: Electron.ContextMenuParams): void {
     const wc = view.webContents
     const entry = this.views.get(id)
     const menu = new Menu()
@@ -248,7 +325,7 @@ export class TabViews {
       add({ type: 'separator' })
     }
 
-    const extensionItems = entry?.profile.extensions.getContextMenuItems(wc, params) ?? []
+    const extensionItems = entry?.profile.extensions?.getContextMenuItems(wc, params) ?? []
     if (extensionItems.length) {
       extensionItems.forEach((item) => menu.append(item))
       add({ type: 'separator' })

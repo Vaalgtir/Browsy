@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { injectBrowserAction } from 'electron-chrome-extensions/browser-action'
-import type { OverlayState, Toast, UiApi, UiEvent, UiState } from '../shared/ipc'
+import type { LittleState, OverlayState, Toast, UiApi, UiEvent, UiState } from '../shared/ipc'
 
 // API browserAction (boutons d'extensions) pour la sidebar.
 if (location.search.includes('view=sidebar')) injectBrowserAction()
@@ -22,6 +22,8 @@ const api: UiApi = {
   onToast: (listener) => subscribe<Toast | null>('ui:toast', listener),
   onStatus: (listener) => subscribe<string>('ui:status', listener),
   searchHistory: (query) => ipcRenderer.invoke('ui:history', query),
+  commands: () => ipcRenderer.invoke('ui:commands'),
+  onLittle: (listener) => subscribe<LittleState>('ui:little', listener),
 }
 
 contextBridge.exposeInMainWorld('browsy', api)

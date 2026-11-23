@@ -16,6 +16,8 @@ export function createUiView(view: string, extra: Record<string, string> = {}): 
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      // Interface : jamais mise en veille (sinon ses animations restent figées quand elle vient d'apparaître).
+      backgroundThrottling: false,
     },
   })
   ui.setBackgroundColor('#00000000')

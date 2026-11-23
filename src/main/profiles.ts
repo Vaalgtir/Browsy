@@ -9,7 +9,8 @@ import { installPermissionHandler } from './permissions'
 export interface ProfileContext {
   id: Id
   session: Session
-  extensions: ElectronChromeExtensions
+  /** Absent en navigation privée (pas d'extensions). */
+  extensions?: ElectronChromeExtensions
 }
 
 /** Callbacks des API chrome.tabs / chrome.windows, branchés sur le navigateur. */

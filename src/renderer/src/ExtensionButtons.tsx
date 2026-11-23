@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import type { UiState } from '../../shared/ipc'
-import { activeSpace } from '../../shared/model'
 import { IconPuzzle } from './icons'
 import { browsy } from './useBrowser'
 
@@ -71,7 +70,7 @@ export function ExtensionButtons({ state }: { state: UiState }) {
     }
   }, [partition])
 
-  const profileId = activeSpace(state.persisted).profileId
+  const profileId = state.persisted.spaces.find((s) => s.id === state.spaceId)?.profileId ?? ''
   const pinned = state.persisted.settings.pinnedExtensions[profileId]
   const visible = (pinned ? actions.filter((a) => pinned.includes(a.id)) : actions).slice(0, maxVisible(state.persisted.settings.sidebarWidth))
   if (!actions.length) return null

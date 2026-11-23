@@ -43,11 +43,12 @@ const USER_AGENT_OVERRIDE = {
 const PAGE_TYPES = new Set(['window', 'browserView', 'webview'])
 
 async function applyChromeIdentity(wc: WebContents): Promise<void> {
+  if (wc.isDestroyed()) return
   try {
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3')
     await wc.debugger.sendCommand('Emulation.setUserAgentOverride', USER_AGENT_OVERRIDE)
   } catch (error) {
-    console.warn('[chrome-identity] échec', wc.id, error)
+    if (!wc.isDestroyed()) console.warn('[chrome-identity] échec', wc.id, error)
   }
 }
 

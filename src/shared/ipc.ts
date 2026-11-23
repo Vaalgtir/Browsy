@@ -1,9 +1,15 @@
 import type { Layout, Rect } from './layout'
 import type { Id, LiveTab, PersistedState, Settings, SpaceTheme, TabLocation } from './model'
 
-/** État envoyé à l'UI (sidebar, sidebar flottante, overlay). */
+/** État envoyé à l'UI (sidebar, sidebar flottante, overlay). Propre à chaque fenêtre. */
 export interface UiState {
   persisted: PersistedState
+  /** Space affiché dans cette fenêtre. */
+  spaceId: Id
+  /** Fenêtre de navigation privée. */
+  isPrivate: boolean
+  /** Onglets avec un média en cours (contrôles dans la sidebar), hors onglet affiché. */
+  mediaTabIds: Id[]
   live: Record<Id, LiveTab>
   activeTabId: Id | null
   /** Onglets affichés (plusieurs en Split View). */
@@ -71,6 +77,14 @@ export type BrowserAction =
   | { type: 'ui.openSettings' }
   | { type: 'archive.restore'; index: number }
   | { type: 'history.open'; url: string }
+  | { type: 'media.toggle'; id: Id }
+  | { type: 'ui.themeEditor'; spaceId: Id; anchor?: Rect }
+  | { type: 'profile.create'; name: string }
+  | { type: 'profile.rename'; id: Id; name: string }
+  | { type: 'profile.delete'; id: Id }
+  | { type: 'arc.import' }
+  | { type: 'command.run'; id: string }
+  | { type: 'browser.setDefault' }
 
 export type CommandBarMode = 'new-tab' | 'edit-url'
 
@@ -118,6 +132,8 @@ export type OverlayState =
   | { kind: 'find'; tabId: Id; matches: number; activeMatch: number }
   | { kind: 'site-controls'; site: SiteInfo }
   | { kind: 'extensions'; extensions: ExtensionInfo[]; partition: string }
+  | { kind: 'theme-editor'; spaceId: Id }
+  | { kind: 'peek'; url: string; title: string; loading: boolean }
 
 /** Actions propres à l'overlay. */
 export type OverlayAction =
@@ -127,6 +143,8 @@ export type OverlayAction =
   | { type: 'site.zoom'; tabId: Id; delta: number }
   | { type: 'site.permission'; origin: string; key: string; decision: PermissionDecision | null }
   | { type: 'site.clearData'; tabId: Id }
+  | { type: 'peek.expand' }
+  | { type: 'peek.close' }
 
 /** Événements ponctuels envoyés à la sidebar. */
 export type UiEvent =
@@ -136,6 +154,7 @@ export type UiEvent =
   | { type: 'floating-show' }
   /** Ouvrir le popup d'une extension, ancré sur le bouton puzzle de la barre d'URL. */
   | { type: 'activate-extension'; id: string }
+  | { type: 'open-library'; tab: 'downloads' | 'archive' | 'history' }
 
 /** Petite notification (« Lien copié »). */
 export interface Toast {
@@ -150,8 +169,28 @@ export interface HistoryItem {
   lastVisitAt: number
 }
 
+export interface CommandInfo {
+  id: string
+  label: string
+  menu: string
+  accelerator?: string
+}
+
+/** État d'une mini-fenêtre (Little Arc). */
+export interface LittleState {
+  url: string
+  title: string
+  favicon?: string
+  loading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+  spaceName: string
+}
+
+export type LittleAction = { type: 'little.expand' } | { type: 'little.back' } | { type: 'little.forward' } | { type: 'little.reload' } | { type: 'little.copy' }
+
 export interface UiApi {
-  dispatch(action: BrowserAction | OverlayAction): Promise<void>
+  dispatch(action: BrowserAction | OverlayAction | LittleAction): Promise<void>
   getState(): Promise<UiState>
   onState(listener: (state: UiState) => void): () => void
   onEvent(listener: (event: UiEvent) => void): () => void
@@ -161,4 +200,6 @@ export interface UiApi {
   onToast(listener: (toast: Toast | null) => void): () => void
   onStatus(listener: (url: string) => void): () => void
   searchHistory(query: string): Promise<HistoryItem[]>
+  commands(): Promise<CommandInfo[]>
+  onLittle(listener: (state: LittleState) => void): () => void
 }
