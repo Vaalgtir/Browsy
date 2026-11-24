@@ -35,10 +35,9 @@ import { Library } from './Library'
 import { SpaceIcon } from './SpaceIcon'
 import { applyTheme } from './theme'
 import { browsy, displayHost, useUiState } from './useBrowser'
+import { useSpaceSwipe } from './useSpaceSwipe'
 
 const DRAG_TYPE = 'application/x-browsy-tab'
-const SWIPE_THRESHOLD = 70
-const SWIPE_COOLDOWN_MS = 450
 
 /** Cible de dépôt pendant un glisser-déposer. */
 interface DropTarget extends TabLocation {
@@ -73,11 +72,10 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
   const [drop, setDrop] = useState<DropTarget | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [libraryTab, setLibraryTab] = useState<'downloads' | 'archive' | 'history'>('downloads')
-  const [direction, setDirection] = useState<'left' | 'right'>('right')
   const [enterKey, setEnterKey] = useState(0)
   const [dragWidth, setDragWidth] = useState<number | null>(null)
-  const previousSpace = useRef<Id | null>(null)
-  const swipe = useRef({ accumulated: 0, lockedUntil: 0 })
+  const sidebarRef = useRef<HTMLElement>(null)
+  const trackRef = useRef<HTMLDivElement>(null)
 
   useEffect(
     () =>
@@ -98,17 +96,16 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
   const activeSpaceId = state?.spaceId ?? null
   const space = spaces.find((s) => s.id === activeSpaceId) ?? spaces[0]
 
-  // Sens de l'animation de changement de Space : vers la droite si le Space suivant est à droite.
-  useLayoutEffect(() => {
-    if (!activeSpaceId) return
-    const prev = previousSpace.current
-    if (prev && prev !== activeSpaceId) {
-      const from = spaces.findIndex((s) => s.id === prev)
-      const to = spaces.findIndex((s) => s.id === activeSpaceId)
-      setDirection(to > from ? 'right' : 'left')
-    }
-    previousSpace.current = activeSpaceId
-  }, [activeSpaceId, spaces])
+  const spaceIndex = space ? spaces.indexOf(space) : -1
+
+  useSpaceSwipe(
+    sidebarRef,
+    trackRef,
+    spaces.map((s) => s.id),
+    space?.id,
+    !libraryOpen,
+    (id) => dispatch({ type: 'space.select', id }),
+  )
 
   // Thème du Space sur toute la page (fond, grain, apparence claire ou sombre).
   const theme = space?.theme
@@ -125,20 +122,6 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
   const { settings } = state.persisted
   const width = dragWidth ?? settings.sidebarWidth
   const showDocked = floating || state.sidebarVisible
-
-  /** Glissement horizontal à deux doigts sur la sidebar : Space précédent / suivant. */
-  const onWheel = (e: React.WheelEvent) => {
-    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return
-    const s = swipe.current
-    if (Date.now() < s.lockedUntil) return
-    s.accumulated += e.deltaX
-    if (Math.abs(s.accumulated) < SWIPE_THRESHOLD) return
-    const i = spaces.findIndex((sp) => sp.id === space.id)
-    const next = spaces[i + (s.accumulated > 0 ? 1 : -1)]
-    s.accumulated = 0
-    s.lockedUntil = Date.now() + SWIPE_COOLDOWN_MS
-    if (next) dispatch({ type: 'space.select', id: next.id })
-  }
 
   const dnd: DnD = {
     drop,
@@ -157,11 +140,11 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
 
   const sidebar = (
     <aside
+      ref={sidebarRef}
       className="sidebar"
       data-position={settings.sidebarPosition}
       data-floating={floating || undefined}
       style={{ width }}
-      onWheel={onWheel}
       onDragEnd={() => setDrop(null)}
     >
       <TopBar state={state} floating={floating} />
@@ -171,31 +154,15 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
       {libraryOpen ? (
         <Library key={libraryTab} state={state} initialTab={libraryTab} onClose={() => setLibraryOpen(false)} />
       ) : (
-        <div className="space-content" key={space.id} data-direction={direction}>
-          <SpaceTitle space={space} edit={edit} />
-          <section className="pinned" onDragOver={(e) => acceptDrag(e, { section: 'pinned', spaceId: space.id, index: -1 }, dnd)} onDrop={dnd.commit}>
-            <NodeList nodes={space.pinned} state={state} space={space} dnd={dnd} edit={edit} section="pinned" />
-          </section>
-
-          <div className="today-divider">
-            <span className="divider" />
-            {space.today.length > 0 && (
-              <button className="clear-button" onClick={() => dispatch({ type: 'today.clear', spaceId: space.id })}>
-                ↓ Effacer
-              </button>
+        <div className="space-pager">
+          <div className="space-track" ref={trackRef}>
+            {[spaces[spaceIndex - 1], space, spaces[spaceIndex + 1]].map(
+              (pane, offset) =>
+                pane && (
+                  <SpacePane key={pane.id} state={state} space={pane} dnd={dnd} edit={edit} position={offset - 1} />
+                ),
             )}
           </div>
-
-          <button className="row new-tab" onClick={() => dispatch({ type: 'ui.commandBar', mode: 'new-tab' })}>
-            <span className="row-icon">
-              <IconPlus />
-            </span>
-            <span className="title">Nouvel onglet</span>
-          </button>
-
-          <section className="today" onDragOver={(e) => acceptDrag(e, { section: 'today', spaceId: space.id, index: -1 }, dnd)} onDrop={dnd.commit}>
-            <NodeList nodes={space.today} state={state} space={space} dnd={dnd} edit={edit} section="today" />
-          </section>
         </div>
       )}
 
@@ -224,6 +191,40 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
       <Backdrop state={state} />
       {showDocked && sidebar}
     </>
+  )
+}
+
+// ── Contenu d'un Space (une page du carrousel) ───────────────────────────
+
+/** `position` : -1 Space précédent, 0 courant, 1 suivant. Les voisins sont visibles pendant un glissement, inertes. */
+function SpacePane({ state, space, dnd, edit, position }: { state: UiState; space: Space; dnd: DnD; edit: Editing; position: number }) {
+  return (
+    <div className="space-content" style={{ left: `${position * 100}%` }} inert={position !== 0} aria-hidden={position !== 0 || undefined}>
+      <SpaceTitle space={space} edit={edit} />
+      <section className="pinned" onDragOver={(e) => acceptDrag(e, { section: 'pinned', spaceId: space.id, index: -1 }, dnd)} onDrop={dnd.commit}>
+        <NodeList nodes={space.pinned} state={state} space={space} dnd={dnd} edit={edit} section="pinned" />
+      </section>
+
+      <div className="today-divider">
+        <span className="divider" />
+        {space.today.length > 0 && (
+          <button className="clear-button" onClick={() => dispatch({ type: 'today.clear', spaceId: space.id })}>
+            ↓ Effacer
+          </button>
+        )}
+      </div>
+
+      <button className="row new-tab" onClick={() => dispatch({ type: 'ui.commandBar', mode: 'new-tab' })}>
+        <span className="row-icon">
+          <IconPlus />
+        </span>
+        <span className="title">Nouvel onglet</span>
+      </button>
+
+      <section className="today" onDragOver={(e) => acceptDrag(e, { section: 'today', spaceId: space.id, index: -1 }, dnd)} onDrop={dnd.commit}>
+        <NodeList nodes={space.today} state={state} space={space} dnd={dnd} edit={edit} section="today" />
+      </section>
+    </div>
   )
 }
 

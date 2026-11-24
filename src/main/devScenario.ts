@@ -59,6 +59,47 @@ export async function runScenarios(app: App, browser: Browser, names: string[], 
       browser.win.setFullScreen(false)
       await delay(1500)
       browser.toggleSidebar()
+    } else if (name === 'swipe') {
+      // Gestes de trackpad simulés (contact puis inertie), enchaînés sans pause, à plusieurs hauteurs.
+      while (browser.uiState().persisted.spaces.length < 4) {
+        await browser.dispatch({ type: 'space.new' })
+        await delay(300)
+      }
+      await browser.dispatch({ type: 'overlay.close' })
+      await browser.dispatch({ type: 'space.select', id: browser.uiState().persisted.spaces[0].id })
+      await delay(600)
+      const wc = browser.win.webContents
+      const [, height] = browser.win.getContentSize()
+      const index = () => browser.uiState().persisted.spaces.findIndex((sp) => sp.id === browser.uiState().spaceId)
+      const wheel = (y: number, dx: number) =>
+        wc.sendInputEvent({ type: 'mouseWheel', x: 120, y, deltaX: -dx, deltaY: 0, hasPreciseScrollingDeltas: true, canScroll: true } as Electron.MouseWheelInputEvent)
+      const swipe = async (y: number, sign: number, momentumEvents: number) => {
+        for (let i = 0; i < 8; i++) {
+          wheel(y, sign * Math.min(14, 2 + i * 3))
+          await delay(16)
+        }
+        for (let i = 1; i <= momentumEvents; i++) {
+          wheel(y, sign * 14 * 0.9 ** i)
+          await delay(16)
+        }
+      }
+      for (const [label, y] of [['bas (sous les onglets)', height - 120], ['milieu', Math.round(height / 2)], ['favoris', 130]] as const) {
+        const sign = index() === 0 ? 1 : -1
+        const before = index()
+        for (let k = 0; k < 3; k++) await swipe(y, sign, 6)
+        await delay(800)
+        console.log(`[scenario] swipe ${label} : 3 swipes enchaînés → ${Math.abs(index() - before)} Space(s) parcouru(s)`)
+      }
+      // Capture en plein glissement : le contenu ne doit pas déborder de la sidebar.
+      await delay(400)
+      const y = height - 120
+      const sign = index() === 0 ? 1 : -1
+      for (let i = 0; i < 6; i++) {
+        wheel(y, sign * 9)
+        await delay(16)
+      }
+      await shot(wc, 'swipe-mid')
+      await delay(300)
     } else if (name === 'ui') {
       await shot(browser.win.webContents, name)
     } else if (name === 'theme') {

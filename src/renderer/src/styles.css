@@ -253,7 +253,6 @@ html[data-view='sidebar']::before,
   gap: 8px;
   padding: 6px 8px 6px 8px;
   color: var(--sb-text);
-  -webkit-app-region: drag;
 }
 
 .sidebar[data-position='right'] {
@@ -271,6 +270,8 @@ html[data-view='sidebar']::before,
   height: 34px;
   gap: 2px;
   flex-shrink: 0;
+  /* Seule zone de déplacement de la fenêtre : ailleurs, macOS avalerait défilement et glissements. */
+  -webkit-app-region: drag;
 }
 
 .traffic-lights {
@@ -512,30 +513,33 @@ input.favorite-rename {
 
 /* ── Contenu du Space ─────────────────────────────────────────────────── */
 
-.space-content {
+/* Carrousel des Spaces : le courant et ses voisins côte à côte, découpés à la largeur de la sidebar. */
+.space-pager {
+  position: relative;
   flex: 1;
   min-height: 0;
+  margin: 0 -8px;
+  overflow: clip;
+}
+
+.space-track {
+  position: absolute;
+  inset: 0;
+}
+
+.space-content {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin: 0 -8px;
   padding: 0 8px;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
   scrollbar-width: none;
-  /* Changement de Space : glisse dans le sens du geste (cohérence spatiale). */
-  animation: space-in 220ms var(--ease-out);
-}
-
-.space-content[data-direction='left'] {
-  --space-shift: -16px;
-}
-
-@keyframes space-in {
-  from {
-    opacity: 0;
-    transform: translateX(var(--space-shift, 16px));
-  }
 }
 
 .space-title {
@@ -1658,7 +1662,6 @@ html[data-view='overlay'] .icon-button {
 /* ── Accessibilité ────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
-  .space-content,
   .library {
     animation-name: fade-in;
   }
