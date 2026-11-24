@@ -29,7 +29,7 @@ Arc n'évolue plus. Browsy reprend ce qui le rend agréable au quotidien (sideba
 ### Compiler et installer l'application
 
 ```sh
-git clone <url-du-dépôt> Browsy
+git clone https://github.com/Vaalgtir/Browsy.git
 cd Browsy
 npm install          # télécharge aussi le binaire Electron
 npm run install-app  # compile, empaquette et copie Browsy.app dans /Applications
