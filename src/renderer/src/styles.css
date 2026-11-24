@@ -7,7 +7,8 @@
 
 :root {
   color-scheme: light dark;
-  font: 13px/1.35 system-ui, -apple-system, sans-serif;
+  font: 14.5px/1.35 system-ui, -apple-system, sans-serif;
+  font-weight: 450;
   letter-spacing: 0.003em;
   -webkit-font-smoothing: antialiased;
 
@@ -142,7 +143,7 @@ html[data-view='sidebar']::before,
   display: grid;
   place-items: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 14.5px;
 }
 
 .card-empty kbd {
@@ -181,7 +182,7 @@ html[data-view='sidebar']::before,
   display: inline-flex;
   align-items: center;
   color: var(--text-muted);
-  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .dev-scheme.secure {
@@ -192,7 +193,7 @@ html[data-view='sidebar']::before,
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--text);
 }
 
@@ -210,7 +211,7 @@ html[data-view='sidebar']::before,
   min-width: 20px;
   padding: 0 7px;
   border-radius: 10px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -349,7 +350,7 @@ html[data-view='sidebar']::before,
   white-space: nowrap;
   text-overflow: ellipsis;
   text-align: left;
-  font-size: 14px;
+  font-size: 15.5px;
   letter-spacing: -0.005em;
 }
 
@@ -394,7 +395,7 @@ html[data-view='sidebar']::before,
   padding: 0 3px;
   border-radius: 6px;
   color: white;
-  font-size: 8.5px;
+  font-size: 9.5px;
   font-weight: 700;
   line-height: 12px;
   text-align: center;
@@ -444,7 +445,7 @@ html[data-view='sidebar']::before,
   border: 1.5px dashed var(--sb-faint);
   border-radius: 12px;
   color: var(--sb-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .favorite-cell {
@@ -545,7 +546,7 @@ input.favorite-rename {
   min-height: 30px;
   padding: 0 4px 0 10px;
   color: var(--sb-muted);
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.01em;
 }
@@ -577,7 +578,7 @@ input.space-title.editing {
   background: var(--sb-active);
   color: var(--sb-text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -627,7 +628,7 @@ input.space-title.editing {
   padding: 2px 6px;
   border-radius: 6px;
   color: var(--sb-muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   opacity: 0;
   transition:
@@ -663,7 +664,7 @@ input.space-title.editing {
   min-height: 34px;
   padding: 0 4px 0 10px;
   border-radius: 9px;
-  font-size: 13px;
+  font-size: 14.5px;
   text-align: left;
   transition:
     background-color 120ms ease,
@@ -756,7 +757,7 @@ input.space-title.editing {
   flex-shrink: 0;
   padding-right: 6px;
   color: var(--sb-muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -804,7 +805,7 @@ input.title.editing {
   height: 100%;
   padding: 0 8px;
   border-radius: 7px;
-  font-size: 12.5px;
+  font-size: 14px;
 }
 
 .split-part.focused {
@@ -861,7 +862,7 @@ input.title.editing {
 }
 
 .library-title {
-  font-size: 13px;
+  font-size: 14.5px;
   font-weight: 650;
 }
 
@@ -878,7 +879,7 @@ input.title.editing {
   height: 26px;
   border-radius: 7px;
   color: var(--sb-muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   transition: background-color 120ms ease;
 }
@@ -924,14 +925,14 @@ input.title.editing {
 .library-empty {
   margin: 16px 10px;
   color: var(--sb-muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
 .library-footer-button {
   margin: 6px 10px;
   color: var(--sb-muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
   text-align: left;
 }
 
@@ -1161,7 +1162,7 @@ html[data-view='status'] {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 15px;
+  font-size: 16.5px;
   font-weight: 650;
   letter-spacing: -0.01em;
 }
@@ -1171,7 +1172,7 @@ html[data-view='status'] {
   align-items: center;
   gap: 5px;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
 
 .site-security.secure svg {
@@ -1193,7 +1194,7 @@ html[data-view='status'] {
   padding: 9px 4px;
   border-radius: 10px;
   background: var(--selected);
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   transition: transform 120ms var(--ease-out);
 }
@@ -1204,7 +1205,7 @@ html[data-view='status'] {
 
 .site-action .md {
   font-weight: 700;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 16px;
 }
 
@@ -1219,7 +1220,7 @@ html[data-view='status'] {
 .site-section h3 {
   margin: 2px 8px 4px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -1260,12 +1261,12 @@ html[data-view='status'] {
   height: 26px;
   min-width: 28px;
   border-radius: 7px;
-  font-size: 14px;
+  font-size: 15.5px;
 }
 
 .stepper .stepper-value {
   min-width: 52px;
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1277,7 +1278,7 @@ html[data-view='status'] {
   flex: none;
   height: 22px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -1345,7 +1346,7 @@ html[data-view='status'] {
   padding: 0 10px;
   border-radius: 8px;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 14px;
   text-align: left;
 }
 
@@ -1372,7 +1373,7 @@ html[data-view='overlay'] .icon-button {
 .menu-header {
   padding: 12px 16px 6px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -1405,13 +1406,13 @@ html[data-view='overlay'] .icon-button {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 13px;
+  font-size: 14.5px;
 }
 
 .menu-empty {
   margin: 8px 10px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .menu-footer {
@@ -1466,7 +1467,7 @@ html[data-view='overlay'] .icon-button {
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 17px;
+  font-size: 18.5px;
   letter-spacing: -0.012em;
   user-select: text;
 }
@@ -1518,7 +1519,7 @@ html[data-view='overlay'] .icon-button {
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 /* ── Overlay : recherche dans la page ─────────────────────────────────── */
@@ -1544,14 +1545,14 @@ html[data-view='overlay'] .icon-button {
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  font-size: 15.5px;
   user-select: text;
 }
 
 .find-count {
   min-width: 36px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -1620,7 +1621,7 @@ html[data-view='overlay'] .icon-button {
 }
 
 .toast-message {
-  font-size: 13px;
+  font-size: 14.5px;
   font-weight: 600;
 }
 
@@ -1629,7 +1630,7 @@ html[data-view='overlay'] .icon-button {
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
 
 .status-stage {
@@ -1651,7 +1652,7 @@ html[data-view='overlay'] .icon-button {
   border: 0.5px solid var(--surface-border);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
 
 /* ── Accessibilité ────────────────────────────────────────────────────── */
@@ -1748,13 +1749,13 @@ html[data-view='overlay'] .icon-button {
 }
 
 .media-name {
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 500;
 }
 
 .media-host {
   color: var(--sb-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .media-button {
@@ -1827,7 +1828,7 @@ html[data-view='overlay'] .icon-button {
 .editor-section h3 {
   margin: 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -1981,7 +1982,7 @@ html[data-view='overlay'] .icon-button {
 .peek-host {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .peek-button {
@@ -1991,7 +1992,7 @@ html[data-view='overlay'] .icon-button {
   height: 30px;
   padding: 0 10px;
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 500;
   transition: transform 120ms var(--ease-out);
 }
@@ -2049,7 +2050,7 @@ html[data-view='settings'] {
   padding: 0 10px;
   border-radius: 7px;
   text-align: left;
-  font-size: 13px;
+  font-size: 14.5px;
   -webkit-app-region: no-drag;
 }
 
@@ -2069,7 +2070,7 @@ html[data-view='settings'] {
 
 .settings-main h1 {
   margin: 0 0 18px;
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.015em;
 }
@@ -2077,7 +2078,7 @@ html[data-view='settings'] {
 .settings-main h2 {
   margin: 22px 0 8px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -2086,7 +2087,7 @@ html[data-view='settings'] {
 .settings-intro {
   margin: -6px 0 14px;
   color: var(--text-muted);
-  font-size: 12.5px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -2108,7 +2109,7 @@ html[data-view='settings'] {
 
 .settings-label small {
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
 
 .settings-control {
@@ -2133,7 +2134,7 @@ html[data-view='settings'] {
   padding: 0 12px;
   border-radius: 7px;
   background: var(--selected);
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 500;
   transition: transform 120ms var(--ease-out);
 }
@@ -2183,7 +2184,7 @@ html[data-view='settings'] {
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .settings-icon-button {
@@ -2212,12 +2213,12 @@ html[data-view='settings'] {
 
 .settings-link {
   color: var(--accent);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .shortcut {
@@ -2242,7 +2243,7 @@ html[data-view='settings'] {
 
 .rule .rule-word {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -2306,7 +2307,7 @@ html[data-view='little'] .icon-button {
 .little-host {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .little-open {
@@ -2319,7 +2320,7 @@ html[data-view='little'] .icon-button {
   border-radius: 8px;
   background: var(--accent);
   color: white;
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   transition: transform 120ms var(--ease-out);
